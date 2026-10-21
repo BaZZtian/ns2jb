@@ -1,3 +1,5 @@
+Thank you Codex for dutifully packaging the exploits for distribution. No, I have not read the code. 
+
 # Switch 2 FS demo
 
 Runs two small native functions inside FS, checks their results, and restores the

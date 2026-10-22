@@ -1,0 +1,54 @@
+# Provenance — what this repository is and where it came from
+
+## Upstream
+
+- **Upstream repository:** https://gitlab.com/pepsipu/ns2jb (author: pepsipu)
+- **Companion write-up:** https://pepsipu.com/blog/2026-10-switch2-jailbreak-ns2jb/ (October 18, 2026)
+- **Upstream commit captured:** `95f5525089273c5fce0b95047f3600f8442e96ae` ("clarify"), the tip of `main` on 2026-10-22
+- **Upstream history:** 3 commits — `e4ded17` "Import tested Switch 2 distribution", `4f03533` "add attribution", `95f5525` "clarify"
+
+The full upstream history, commit messages, and `SHA256SUMS` are preserved in
+this repository. `origin` still points at the GitLab upstream; `github` and
+`codeberg` are the working remotes for this rework.
+
+## Fork / rework
+
+- **GitHub mirror (working):** https://github.com/mhzsajan/ns2jb
+- **Codeberg mirror (working):** https://codeberg.org/mhzsajan/ns2jb
+
+## Capture verification
+
+The upstream README claims `engine/switch2/ro/payload/main` (the native NSO
+payload) can be rebuilt byte-identically from `main.c`, `process.c`, and
+`start.S` with Zig 0.15.2. We verified that claim at capture time:
+
+```
+node engine/build-payload.cjs --check --zig <path to zig 0.15.2>
+{"bytes":4757,"sha256":"d590cbfc5d9152c24d5a36f083f8470a2f3164be6b78130129d44132b939701a","matched":true}
+```
+
+- Zig 0.15.2, Windows x86-64 build (`zig-x86_64-windows-0.15.2`)
+- `matched: true` — the rebuilt NSO image equals the shipped `main` byte-for-byte
+- `payloadBytes: 4757`, SHA-256 as above (matches `engine/switch2/ro/payload/manifest.json`)
+
+This is a stronger statement than trusting `SHA256SUMS`: the shipped binary is
+reproducible from the shipped source, on an independent machine.
+
+## Scope of the rework
+
+Nothing in `engine/` has been changed in the capture commit. The rework so far
+is documentation and analysis:
+
+- `docs/PROVENANCE.md` — this file
+- `docs/ANALYSIS.md` — the exploit chain mapped against the actual code
+- `docs/blog-capture.md` — captured copy of the companion write-up
+
+Later rework commits will say explicitly which `engine/` files they touch and why.
+
+## Hardware claim status
+
+The upstream author reports the demo was physically tested on a Switch 2,
+system software 23.0.1, SmileBASIC 4.4.9, on 2026-10-21 (third fresh boot; the
+first two attempts stopped at validation checks and cleaned up). We have **not**
+re-run anything on hardware; every local check here is host-side: the
+reproducible-build check, and unit-level checks under `test.cjs`.

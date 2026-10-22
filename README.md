@@ -1,4 +1,4 @@
-Thank you Codex for dutifully packaging the exploits for distribution. No, I have not read the code. 
+Thank you Codex for dutifully packaging the exploits for distribution. No, I have not read the distributed package.
 
 # Switch 2 FS demo
 

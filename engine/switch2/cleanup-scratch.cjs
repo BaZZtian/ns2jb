@@ -5,6 +5,20 @@ const check = (ok, message) => {if (!ok) throw Error(message);};
 
 async function previousScratch() {
   const current = path.resolve(__dirname, '..'), workspace = path.dirname(current), found = [];
+  const seen = new Set();
+  async function consider(directory, reportFile, onlyTemporary = false) {
+    check(path.dirname(reportFile) === path.join(directory, 'switch2/memory') &&
+      /^reserved-gap-[0-9]+\.json$/.test(path.basename(reportFile)), 'Previous acquisition path differs');
+    if (seen.has(reportFile)) return;
+    seen.add(reportFile);
+    const report = JSON.parse(await fs.readFile(reportFile));
+    check(report.session === path.basename(directory), 'Previous scratch belongs to a different launch');
+    if (report.cleanedUp || !report.retained?.created?.length) return;
+    check(/^\/NS2_GAP_[0-9]{13}$/.test(report.scratch) && report.retained.created.every(item =>
+      ['save', 'tmp'].includes(item.name) && item.path === report.scratch), 'Previous scratch ownership is incomplete');
+    const mounts = report.retained.created.map(item => item.name).filter(name => !onlyTemporary || name === 'tmp');
+    if (mounts.length) found.push({source: reportFile, scratch: report.scratch, mounts});
+  }
   for (const entry of await fs.readdir(workspace, {withFileTypes: true})) {
     if (!entry.isDirectory() || !/^switch2-[A-Za-z0-9]{6}$/.test(entry.name)) continue;
     const directory = path.join(workspace, entry.name);
@@ -12,14 +26,18 @@ async function previousScratch() {
     let acquisition;
     try {acquisition = JSON.parse(await fs.readFile(path.join(directory, 'switch2/current-acquisition.json')));}
     catch (error) {if (error.code === 'ENOENT') continue; throw error;}
-    check(path.dirname(acquisition.report) === path.join(directory, 'switch2/memory') &&
-      /^reserved-gap-[0-9]+\.json$/.test(path.basename(acquisition.report)), 'Previous acquisition path differs');
-    const report = JSON.parse(await fs.readFile(acquisition.report));
-    check(report.session === entry.name, 'Previous scratch belongs to a different launch');
-    if (report.cleanedUp || !report.retained?.created?.length) continue;
-    check(/^\/NS2_GAP_[0-9]{13}$/.test(report.scratch) && report.retained.created.every(item =>
-      ['save', 'tmp'].includes(item.name) && item.path === report.scratch), 'Previous scratch ownership is incomplete');
-    found.push({source: acquisition.report, scratch: report.scratch, mounts: report.retained.created.map(item => item.name)});
+    await consider(directory, acquisition.report);
+  }
+  // Explicitly named records from another checkout can be recovered without
+  // scanning or deleting anything else in that checkout.
+  for (const raw of (process.env.NS2_RECOVER_SCRATCH_REPORTS || '').split(path.delimiter).filter(Boolean)) {
+    check(path.isAbsolute(raw), 'Recovery report path must be absolute');
+    const reportFile = path.resolve(raw);
+    const directory = path.dirname(path.dirname(path.dirname(reportFile)));
+    check(/^switch2-[A-Za-z0-9]{6}$/.test(path.basename(directory)), 'Recovery run directory differs');
+    const acquisition = JSON.parse(await fs.readFile(path.join(directory, 'switch2/current-acquisition.json')));
+    check(acquisition.report === reportFile, 'Recovery report is not this run’s acquisition');
+    await consider(directory, reportFile, true);
   }
   return found;
 }
@@ -70,4 +88,4 @@ async function main() {
   return proof;
 }
 
-module.exports = {main};
+module.exports = {main, previousScratch};

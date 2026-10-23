@@ -3,10 +3,11 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const memory = require('../tools/endpoint.cjs');
 const {linksFrom} = require('./links.cjs');
-const rpc = require('../../shared/rpc.cjs');
+const {externalLink} = require('./link-anchor.cjs');
 const {lowerWindow} = require("./lower-window.cjs");
 const {metadataWindow} = require('./metadata-window.cjs');
 const check = (ok, message) => { if (!ok) throw Error(message); };
+const DECIDABLE_CANDIDATES = 4;
 
 function poolBounds(links, seed) {
   check(links.length > 0, 'The pool capture has no native links');
@@ -45,6 +46,12 @@ async function resolvePool(socket, info, source, evidence, save) {
       await save();
       return {start: bounds.first, ...bounds};
     }
+    // Once the list is short, bounded candidate-specific anchor reads are
+    // preferable to an open-ended sequence of shared-range captures.
+    if (bounds.candidates.length <= DECIDABLE_CANDIDATES) {
+      await save();
+      return {...bounds, unresolved: true, links: links.length, captures: captures.length};
+    }
     check(index < 128, 'Additional pool links did not resolve the allocation boundary');
     // Read only a bucket contained in every remaining pool hypothesis. Follow
     // uncaptured native links first; fill an uncaptured gap if they cycle.
@@ -60,7 +67,10 @@ async function resolvePool(socket, info, source, evidence, save) {
         if (!covered(address)) { start = address; break; }
       }
     }
-    check(start !== undefined, 'The shared pool range has no further uncaptured buckets');
+    if (start === undefined) {
+      await save();
+      return {...bounds, unresolved: true, links: links.length, captures: captures.length};
+    }
     const capture = await memory.read(socket, start, cycle);
     captures.push(capture.result); search.captures.push(capture.result);
     links.push(...linksFrom(capture.bytes, start, source.result.address));
@@ -68,7 +78,35 @@ async function resolvePool(socket, info, source, evidence, save) {
   }
 }
 
+async function locatePoolAnchor(read, hypothesis, info, evidence, save) {
+  const starts = hypothesis.start === undefined ? hypothesis.candidates : [hypothesis.start];
+  check(Array.isArray(starts) && starts.length > 0, 'No native pool candidates to check');
+  const tried = [];
+  let capture, node;
+  for (const candidate of starts) {
+    const address = candidate + 0x3a00000;
+    const start = info.plan.addressBias + Math.floor((address - info.plan.addressBias) / info.bucketPeriod) * info.bucketPeriod;
+    evidence.pending = {address: start, length: address - start + 0x1000};
+    await save();
+    const attempt = await read(start, evidence.pending.length);
+    const offset = address - start;
+    const link = externalLink(attempt.bytes, offset, address);
+    tried.push({candidate, address, found: Boolean(link)});
+    if (!link) continue;
+    capture = attempt;
+    node = {address, ...link, observedHex: attempt.bytes.subarray(offset, offset + 64).toString('hex')};
+    evidence.nodeCapture = attempt.result;
+    break;
+  }
+  delete evidence.pending;
+  check(node !== undefined, hypothesis.unresolved
+    ? 'No pool candidate reproduced the external allocator link [' + tried.length + ' candidates tried]'
+    : 'The native bytes do not reproduce the external allocator link');
+  return {node, capture, first: node.address - 0x3a00000, tried};
+}
+
 async function main(supervisorFile) {
+  const rpc = require('../../shared/rpc.cjs');
   const deadline = Date.now() + 600000;
   let supervisor;
   for (;;) {
@@ -95,24 +133,13 @@ async function main(supervisorFile) {
     const source = await memory.read(socket, info.plan.target, 0x500000);
     evidence.poolCapture = source.result;
     evidence.poolHypothesis = await resolvePool(socket, info, source, evidence, save);
-    const {start: first, size} = evidence.poolHypothesis;
-    const node = first + 0x3a00000;
-    const start = info.plan.addressBias + Math.floor((node - info.plan.addressBias) / info.bucketPeriod) * info.bucketPeriod;
-    evidence.pending = {address: start, length: node - start + 0x1000};
-    await save();
-    const capture = await memory.read(socket, start, evidence.pending.length);
-    evidence.nodeCapture = capture.result;
-    const offset = node - start;
-    const next = Number(capture.bytes.readBigUInt64LE(offset));
-    const previous = Number(capture.bytes.readBigUInt64LE(offset + 8));
-    const extent = Number(capture.bytes.readBigUInt64LE(offset + 16));
-    check(Number.isSafeInteger(next) && next >= 2 ** 32 && next < 2 ** 39 && next % 8 === 0 &&
-      next === previous && Math.abs(next - node) > 0x8000000 &&
-      Number.isSafeInteger(extent) && extent >= 0x10000 && extent <= 0x10000000 && extent % 0x1000 === 0,
-    'The native bytes do not reproduce the external allocator link');
-    evidence.node = {address: node, next, previous, extent,
-      observedHex: capture.bytes.subarray(offset, offset + 64).toString('hex')};
-    delete evidence.pending;
+    const hypothesis = evidence.poolHypothesis;
+    const {size} = hypothesis;
+    const {node, capture, first, tried} = await locatePoolAnchor(
+      (address, length) => memory.read(socket, address, length), hypothesis, info, evidence, save);
+    const {next} = node;
+    evidence.node = node;
+    evidence.poolHypothesis = {...hypothesis, start: first, tried};
     await save();
     console.log(JSON.stringify({stage: 'external-link', file, ...evidence.node}));
     const window = metadataWindow(next);
@@ -130,8 +157,8 @@ async function main(supervisorFile) {
       await save();
     }
     const anchor = Buffer.alloc(16);
-    anchor.writeBigUInt64LE(BigInt(node));
-    anchor.writeBigUInt64LE(BigInt(node), 8);
+    anchor.writeBigUInt64LE(BigInt(node.address));
+    anchor.writeBigUInt64LE(BigInt(node.address), 8);
     for (let attempt = 0; attempt < 6; attempt++) {
       const result = await memory.request(socket, {command: 'retained-bootstrap-move',
         address: page, length: probeLength, anchorOffset: window.anchorOffset, anchorHex: anchor.toString('hex')});
@@ -158,4 +185,4 @@ async function main(supervisorFile) {
 }
 
 if (require.main === module) main(process.argv[2]).catch(error => {console.error(error); process.exitCode = 1;});
-module.exports = {main, poolBounds, resolvePool};
+module.exports = {main, poolBounds, resolvePool, locatePoolAnchor, DECIDABLE_CANDIDATES};

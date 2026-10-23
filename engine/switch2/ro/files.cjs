@@ -104,11 +104,13 @@ async function dispatch(context, request, state, domain) {
       for (const name of names) {
         const reply = await pathCall(name, 7);
         if (!reply.result && ['main', 'main.npdm'].includes(name)) {
+          check(reply.data.readUInt32LE() === 1, 'Existing donor path is not a file');
           const file = name === 'main' ? path.join(__dirname, 'payload/main') :
             path.join(__dirname, live.session + '-code-0400000000000037/main.npdm');
           const expected = await fs.readFile(file), mode = Buffer.alloc(4); mode.writeUInt32LE(1);
           check(expected.length > 0 && expected.length <= 0x10000, 'Existing donor comparison exceeds its buffer');
           const child = domain.oneHandle(await pathCall(name, 8, mode));
+          let stale;
           try {
             const size = await s.ipc('Existing donor file size', child, 4);
             check(!size.result, 'Existing donor size query failed');
@@ -122,8 +124,22 @@ async function dispatch(context, request, state, domain) {
             if (current.equals(expected)) {
               if (!donor.files.some(f => f.name === name)) donor.files.push({name, file, size: expected.length,
                 sha256: hash(expected), verified: true, reused: true});
-            } else throw Error('Existing /' + name + ' differs; restart the application to clear its temporary volume');
+            } else if (name === 'main') stale = {name, size: length, sha256: hash(current)};
+            else throw Error('Existing /' + name + ' differs; it was not removed');
           } finally { await s.close(child); }
+          if (stale) {
+            donor.pendingStaleRemoval = stale; await save();
+            const removed = await pathCall(name, 1);
+            check(!removed.result, 'Stale donor /' + name + ' removal failed');
+            check(!(await s.ipc('Commit stale donor removal', donor.handle, 10)).result,
+              'Stale donor removal commit failed');
+            check((await pathCall(name, 7)).canonicalResult === 0x202,
+              'Stale donor /' + name + ' still exists');
+            (donor.removedStale ||= []).push(stale);
+            delete donor.pendingStaleRemoval;
+            if (!donor.checkedAbsent.includes(name)) donor.checkedAbsent.push(name);
+            await save();
+          }
         } else {
           check(reply.canonicalResult === 0x202, 'The donor root already contains /' + name + ' or lookup failed');
           if (!donor.checkedAbsent.includes(name)) donor.checkedAbsent.push(name);

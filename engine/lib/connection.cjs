@@ -123,7 +123,7 @@ async function listen({host, port, token, onWaiting, timeout = 10 * 60 * 1000}) 
         pending.delete(connection);
         stop();
         for (const other of pending) other.close();
-        connection.timeout = 30000;
+        connection.timeout = 120000;
         resolve({connection, addresses});
       }).catch(() => {pending.delete(connection); connection.close();});
     });

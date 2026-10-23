@@ -17,7 +17,7 @@ function request(body) {
         } catch (error) {reject(error);}
       });
     });
-    req.setTimeout(60000, () => req.destroy(Error('Native request timed out; it was not replayed')));
+    req.setTimeout(180000, () => req.destroy(Error('Native request timed out; it was not replayed')));
     req.on('error', reject);
     req.end(JSON.stringify(body, (_, value) => typeof value === 'bigint' ? value.toString() : value));
   });

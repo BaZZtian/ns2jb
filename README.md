@@ -26,6 +26,11 @@ These changes improve compatibility and recovery, but the exploit is still
 timing-sensitive. They are not a guarantee that every attempt—or every
 console—will succeed.
 
+The host now waits up to 3 minutes of inactivity for a native-bridge request
+and up to 2 minutes for each console response after pairing. The initial
+console greeting still has a 10-second limit. These longer waits can avoid
+aborting a slow request that would work otherwise.
+
 Runs two small native functions inside FS, checks their results, and restores the
 original instructions. Switch 2 only; no npm install or compiler needed.
 

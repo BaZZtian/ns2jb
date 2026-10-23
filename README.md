@@ -46,6 +46,14 @@ If a run fails, keep the `runs` folder and restart the console before trying
 again. Enter `REMOVE` only once per application process. Logs and temporary
 memory captures stay in `runs`; they are not part of the distributable.
 
+The metadata probe now selects a 16 KiB or 4 KiB window from the observed
+allocator link, and the later layout check validates the captured SDK page
+while discovering the domain vtable independently. These paths matched saved
+hardware captures from both observed layouts, but this automatic selection has
+not yet been tested in a new live run. It does not infer firmware state from
+`/tmp` free space; the observed layout difference is not proof of a particular
+system-update cause.
+
 Physically tested on October 21, 2026: both FS instruction challenges,
 restoration, and cleanup passed. Acquisition is timing-sensitive: the test
 passed on the third fresh boot. The first two attempts stopped at validation

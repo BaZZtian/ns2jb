@@ -5,6 +5,7 @@ const memory = require('../tools/endpoint.cjs');
 const {linksFrom} = require('./links.cjs');
 const rpc = require('../../shared/rpc.cjs');
 const {lowerWindow} = require("./lower-window.cjs");
+const {metadataWindow} = require('./metadata-window.cjs');
 const check = (ok, message) => { if (!ok) throw Error(message); };
 
 function poolBounds(links, seed) {
@@ -114,15 +115,18 @@ async function main(supervisorFile) {
     delete evidence.pending;
     await save();
     console.log(JSON.stringify({stage: 'external-link', file, ...evidence.node}));
-    const page = Math.floor(next / 0x4000) * 0x4000;
+    const window = metadataWindow(next);
+    const {address: page, length: probeLength} = window;
+    evidence.metadataProbeWindow = window;
+    await save();
     const plan = lowerWindow(page, Number(report.storageSize), info.bucketPeriod,
       [Math.floor(info.plan.target / 0x4000) * 0x4000]);
     const fallback = info.plan.addressBias + plan.readOffset;
     if (![source.result, capture.result].some(item => item.address <= fallback &&
-        fallback + 0x4000 <= item.address + item.length)) {
-      check(fallback >= first && fallback + 0x4000 <= first + size,
+        fallback + probeLength <= item.address + item.length)) {
+      check(fallback >= first && fallback + probeLength <= first + size,
         'A missed-header control is outside the identified native buffer pool');
-      evidence.fallbackCapture = (await memory.read(socket, fallback, 0x4000)).result;
+      evidence.fallbackCapture = (await memory.read(socket, fallback, probeLength)).result;
       await save();
     }
     const anchor = Buffer.alloc(16);
@@ -130,7 +134,7 @@ async function main(supervisorFile) {
     anchor.writeBigUInt64LE(BigInt(node), 8);
     for (let attempt = 0; attempt < 6; attempt++) {
       const result = await memory.request(socket, {command: 'retained-bootstrap-move',
-        address: page, length: 0x4000, anchorOffset: next - page, anchorHex: anchor.toString('hex')});
+        address: page, length: probeLength, anchorOffset: window.anchorOffset, anchorHex: anchor.toString('hex')});
       evidence.attempts.push(result);
       await save();
       console.log(JSON.stringify({stage: result.verified ? 'metadata-verified' : 'header-missed',

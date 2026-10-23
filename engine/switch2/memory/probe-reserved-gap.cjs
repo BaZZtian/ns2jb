@@ -199,7 +199,17 @@ async function main() {
     }
     for (const [name, handle, bytes] of [['save', saved, writeSize + 0x400000], ['tmp', temporary, 0x10000]]) {
       const space = await normal(handle, 11, '/');
-      check(!space.result && space.data.readBigUInt64LE() > BigInt(bytes), 'Insufficient ' + name + ' space');
+      const free = space.result ? 0n : space.data.readBigUInt64LE();
+      (report.freeSpace ||= {})[name] = {result: space.result, bytes: free.toString(), required: bytes};
+      if (name === 'tmp' && !space.result && free < BigInt(bytes)) {
+        // A low-space result does not establish that our own scratch remains.
+        // Inventory the root read-only before deciding what, if anything, is safe to remove.
+        try { report.tmpRootEntries = await require(path.join(directory, 'filesystem.cjs')).listDirectory(s, handle, '/'); }
+        catch (error) { report.tmpRootReadError = error.message; }
+        await save();
+      }
+      check(!space.result && (name === 'tmp' ? free >= BigInt(bytes) : free > BigInt(bytes)),
+        'Insufficient ' + name + ' space');
       check((await normal(handle, 7, scratch)).canonicalResult === 0x202, 'Scratch already exists');
       check(!(await normal(handle, 2, scratch)).result, 'Scratch creation failed');
       created.push({name, handle, path: scratch});

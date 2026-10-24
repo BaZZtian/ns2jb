@@ -31,7 +31,7 @@ async function main() {
     console.log('1/4 Checking the console');
     await script('app', 'map');
     await script('app', 'inspect-mounts');
-    await stage('Remove recorded scratch from prior launches', () => require('./cleanup-scratch.cjs').main());
+    await stage('Remove exploit scratch from prior launches', () => require('./cleanup-scratch.cjs').main());
     const app = await script('app', 'qualify');
     check(app.verified && app.cleanedUp, 'Application worker qualification failed');
     console.log('2/4 Acquiring FS memory');

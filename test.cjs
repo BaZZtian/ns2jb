@@ -247,3 +247,14 @@ test('the engine has only local or Node dependencies, all present in the package
     }
   }
 });
+
+test('startup gap cleanup matches every root entry beginning NS2_GAP', () => {
+  const {gapScratch, scratchDeleteCommand} = require('./engine/switch2/cleanup-scratch.cjs');
+  assert.equal(gapScratch({name: 'NS2_GAP_1792870235231', type: 0}), true);
+  assert.equal(gapScratch({name: 'NS2_GAP_notes', type: 0}), true);
+  assert.equal(gapScratch({name: 'NS2_GAP_file', type: 1}), true);
+  assert.equal(gapScratch({name: 'other_NS2_GAP', type: 0}), false);
+  assert.equal(scratchDeleteCommand(0), 4);
+  assert.equal(scratchDeleteCommand(1), 1);
+  assert.throws(() => scratchDeleteCommand(2), /unsupported/);
+});

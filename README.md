@@ -102,12 +102,12 @@ ordinary `run.cjs` runs do not touch them. An unrecognized nonempty `dumps/`
 directory is never cleared automatically. Copy any partial or completed dump
 you want to keep before starting another dump run. Run logs remain in `runs/`.
 
-Startup removes only scratch paths backed by this checkout's prior run records.
-For an interrupted run from another checkout, `NS2_RECOVER_SCRATCH_REPORTS`
-can name its absolute `reserved-gap-*.json` report path (multiple paths are
-separated by the platform path separator). The runner validates the report and
-the temporary directory's expected shape before removing that directory; it
-does not wipe `/tmp` or remove unrelated files.
+At startup, the runner checks the roots of SmileBASIC's inspected `save` and
+`tmp` mounts and deletes every file or directory whose name starts with
+`NS2_GAP`. Directories are deleted recursively. This no longer depends on
+previous run reports or checks the entry's contents, so do not keep personal
+files with that prefix on either mount. Other names and mounts are untouched;
+the runner does not wipe all of `tmp`.
 
 The metadata probe now selects a 16 KiB or 4 KiB window from the observed
 allocator link, and the later layout check validates the captured SDK page

@@ -1,11 +1,11 @@
 const http = require('node:http');
 const path = require('node:path');
-const {port, token, addresses} = require('../connection.json');
+const {port, addresses} = require('../connection.json');
 
 function request(body) {
   return new Promise((resolve, reject) => {
     const req = http.request({host: '127.0.0.1', port, path: '/', method: 'POST',
-      headers: {authorization: 'Bearer ' + token, 'content-type': 'application/json'}}, res => {
+      headers: {'content-type': 'application/json'}}, res => {
       const parts = [];
       res.on('data', part => parts.push(part));
       res.on('error', reject);

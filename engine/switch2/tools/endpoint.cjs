@@ -2,7 +2,7 @@ const net = require('node:net');
 const fs = require('node:fs/promises');
 const crypto = require('node:crypto');
 
-function requestOnce(socketPath, command, timeoutMs = 60000) {
+function requestOnce(socketPath, command, timeoutMs = 300000) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     let input = '';

@@ -67,8 +67,8 @@ async function chooseHost(args) {
   } finally {input.close();}
 }
 
-function connectCommand(host, token) {
-  return `V=START(${[port, ...host.split('.'), ...token].join(',')})`;
+function connectCommand(host) {
+  return `V=START(${[port, ...host.split('.')].join(',')})`;
 }
 
 async function sourceDigest() {
@@ -122,7 +122,7 @@ async function main(args = process.argv.slice(2)) {
   }
   const dumpFirmware = args[0] === '--dump-firmware';
   const host = await chooseHost(dumpFirmware ? args.slice(1) : args);
-  const token = pairingCode(), command = connectCommand(host, token);
+  const command = connectCommand(host);
   const workspace = path.join(__dirname, 'runs');
   await fs.mkdir(workspace, {recursive: true, mode: 0o700});
   let dumpDirectory;
@@ -140,7 +140,7 @@ async function main(args = process.argv.slice(2)) {
   const result = {platform: 2, sourceSha256: await sourceDigest(), started: new Date().toISOString(), verified: false};
   let native, bridge, failure;
   try {
-    const connected = await listen({host, port, token, onWaiting() {
+    const connected = await listen({host, port, onWaiting() {
       console.log(`Waiting for Switch 2 at ${host}:${port}.`);
       console.log('In a freshly opened SmileBASIC, load the saved bootstrap and enter:');
       console.log('  RUN\n  REMOVE NSR,&H60000000,&H3FFFFFFF');
@@ -153,7 +153,7 @@ async function main(args = process.argv.slice(2)) {
     result.bootstrap = await qualify(native);
     bridge = await serve(native);
     bridge.keepAwake(result.bootstrap.activity);
-    await save(path.join(directory, 'connection.json'), {port: bridge.port, token: bridge.token,
+    await save(path.join(directory, 'connection.json'), {port: bridge.port,
       addresses: {...connected.addresses, session: path.basename(directory), target: 'switch2'}});
     for (const name of ['shared', 'switch2'])
       await fs.cp(path.join(__dirname, 'engine', name), path.join(directory, name), {recursive: true});

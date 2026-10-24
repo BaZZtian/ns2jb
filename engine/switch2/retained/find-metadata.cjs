@@ -39,7 +39,7 @@ async function resolvePool(socket, info, source, evidence, save) {
   const captures = [source.result];
   const links = linksFrom(source.bytes, source.result.address, source.result.address);
   const search = evidence.poolSearch = {captures: [], hypotheses: []};
-  for (let index = 0; index <= 128; index++) {
+  for (let index = 0; index <= 512; index++) {
     const bounds = poolBounds(links, source.result.address);
     search.hypotheses.push(bounds);
     if (bounds.first === bounds.last) {
@@ -52,7 +52,8 @@ async function resolvePool(socket, info, source, evidence, save) {
       await save();
       return {...bounds, unresolved: true, links: links.length, captures: captures.length};
     }
-    check(index < 128, 'Additional pool links did not resolve the allocation boundary');
+    if(index >= 512) break;
+
     // Read only a bucket contained in every remaining pool hypothesis. Follow
     // uncaptured native links first; fill an uncaptured gap if they cycle.
     const cycle = info.bucketPeriod, bias = info.plan.addressBias;
@@ -67,15 +68,17 @@ async function resolvePool(socket, info, source, evidence, save) {
         if (!covered(address)) { start = address; break; }
       }
     }
-    if (start === undefined) {
-      await save();
-      return {...bounds, unresolved: true, links: links.length, captures: captures.length};
-    }
+    if (start === undefined) break;
+
     const capture = await memory.read(socket, start, cycle);
     captures.push(capture.result); search.captures.push(capture.result);
     links.push(...linksFrom(capture.bytes, start, source.result.address));
     await save();
   }
+
+  // bounds did not converge, use first remaining candidate
+  const bounds = poolBounds(links, source.result.address);
+  return {start: bounds.candidates[0], ...bounds};
 }
 
 async function locatePoolAnchor(read, hypothesis, info, evidence, save) {
@@ -134,47 +137,59 @@ async function main(supervisorFile) {
     evidence.poolCapture = source.result;
     evidence.poolHypothesis = await resolvePool(socket, info, source, evidence, save);
     const hypothesis = evidence.poolHypothesis;
-    const {size} = hypothesis;
-    const {node, capture, first, tried} = await locatePoolAnchor(
-      (address, length) => memory.read(socket, address, length), hypothesis, info, evidence, save);
-    const {next} = node;
-    evidence.node = node;
-    evidence.poolHypothesis = {...hypothesis, start: first, tried};
-    await save();
-    console.log(JSON.stringify({stage: 'external-link', file, ...evidence.node}));
-    const window = metadataWindow(next);
-    const {address: page, length: probeLength} = window;
-    evidence.metadataProbeWindow = window;
-    await save();
-    const plan = lowerWindow(page, Number(report.storageSize), info.bucketPeriod,
-      [Math.floor(info.plan.target / 0x4000) * 0x4000]);
-    const fallback = info.plan.addressBias + plan.readOffset;
-    if (![source.result, capture.result].some(item => item.address <= fallback &&
-        fallback + probeLength <= item.address + item.length)) {
-      check(fallback >= first && fallback + probeLength <= first + size,
-        'A missed-header control is outside the identified native buffer pool');
-      evidence.fallbackCapture = (await memory.read(socket, fallback, probeLength)).result;
-      await save();
-    }
-    const anchor = Buffer.alloc(16);
-    anchor.writeBigUInt64LE(BigInt(node.address));
-    anchor.writeBigUInt64LE(BigInt(node.address), 8);
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const result = await memory.request(socket, {command: 'retained-bootstrap-move',
-        address: page, length: probeLength, anchorOffset: window.anchorOffset, anchorHex: anchor.toString('hex')});
-      evidence.attempts.push(result);
-      await save();
-      console.log(JSON.stringify({stage: result.verified ? 'metadata-verified' : 'header-missed',
-        file, attempt, capture: result.capture}));
-      if (result.verified) {
-        evidence.verified = true;
-        evidence.metadata = await memory.request(socket, {command: 'retained-bootstrap-read',
-          address: page - 0x500000, length: 0x4d8000});
-        console.log(JSON.stringify({stage: 'metadata-captured', file, capture: evidence.metadata}));
-        return evidence;
+    const candidates = hypothesis.candidates || [hypothesis.start];
+    let succeeded = false;
+    for (const first of candidates) {
+      try {
+        const size = hypothesis.size;
+        const {node, capture, tried} = await locatePoolAnchor(
+          (address, length) => memory.read(socket, address, length), {...hypothesis, start: first}, info, evidence, save);
+        const {next} = node;
+        evidence.node = {...node, candidate: first};
+        evidence.poolHypothesis = {...hypothesis, start: first, tried};
+        await save();
+        console.log(JSON.stringify({stage: 'external-link', file, ...evidence.node}));
+        const window = metadataWindow(next);
+        const {address: page, length: probeLength} = window;
+        evidence.metadataProbeWindow = window;
+        await save();
+        const plan = lowerWindow(page, Number(report.storageSize), info.bucketPeriod,
+          [Math.floor(info.plan.target / 0x4000) * 0x4000]);
+        const fallback = info.plan.addressBias + plan.readOffset;
+        if (![source.result, capture.result].some(item => item.address <= fallback &&
+            fallback + probeLength <= item.address + item.length)) {
+          check(fallback >= first && fallback + probeLength <= first + size,
+            'A missed-header control is outside the identified native buffer pool');
+          evidence.fallbackCapture = (await memory.read(socket, fallback, probeLength)).result;
+          await save();
+        }
+        const anchor = Buffer.alloc(16);
+        anchor.writeBigUInt64LE(BigInt(node.address));
+        anchor.writeBigUInt64LE(BigInt(node.address), 8);
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const result = await memory.request(socket, {command: 'retained-bootstrap-move',
+            address: page, length: probeLength, anchorOffset: window.anchorOffset, anchorHex: anchor.toString('hex')});
+          evidence.attempts.push(result);
+          await save();
+          console.log(JSON.stringify({stage: result.verified ? 'metadata-verified' : 'header-missed',
+            file, attempt, capture: result.capture}));
+          if (result.verified) {
+            evidence.verified = true;
+            evidence.metadata = await memory.request(socket, {command: 'retained-bootstrap-read',
+              address: page - 0x500000, length: 0x4d8000});
+            console.log(JSON.stringify({stage: 'metadata-captured', file, capture: evidence.metadata}));
+            succeeded = true;
+            break;
+          }
+        }
+        if (succeeded) break;
+        throw Error('Guarded metadata selection did not take effect');
+      } catch (error) {
+        evidence.attempts.push({candidate: first, error: error.stack || error.message});
+        await save();
       }
     }
-    throw Error('Guarded metadata selection did not take effect');
+    if (!succeeded) throw Error('No candidate reproduced the external allocator link');
   } catch (error) {
     evidence.error = error.stack;
     throw error;

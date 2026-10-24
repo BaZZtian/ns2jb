@@ -41,6 +41,7 @@ async function main() {
     });
     console.log('3/4 Starting the native helper');
     const captured = await read(acquisition.report);
+    await new Promise(resolve => setTimeout(resolve, 2000));
     if (!captured.retainedMemory?.captures?.some(c => c.length === 0x4d8000))
       await script('retained', 'find-metadata', [acquisition.supervisorReport]);
     await script('ro', 'install-retained');

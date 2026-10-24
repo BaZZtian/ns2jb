@@ -58,27 +58,24 @@ test('a disconnect cannot turn a partial record into a reply', async t => {
   await assert.rejects(connection.read(8), /disconnected|closed/);
 });
 
-function hello(platform, token) {
+function hello(platform) {
   const sdk = 0x4012300000, main = 0x3012300000;
   const values = [MAGIC, 1, platform, 0x5012340000, 0x80000, main, sdk,
-    main + 0x9c92f0, sdk + 0x5872f0, 0x5010100000, 0x5010100070, ...token, 3925528160];
+    main + 0x9c92f0, sdk + 0x5872f0, 0x5010100000, 0x5010100070,
+    0, 0, 0, 0, 3925528160];
   const bytes = Buffer.alloc(128);
   values.forEach((value, index) => bytes.writeBigUInt64LE(BigInt(value), index * 8));
   return bytes;
 }
 
-test('pairing binds the fresh token, platform and bootstrap layout', () => {
-  const token = pairingCode();
-  assert.equal(token.length, 4);
-  assert.ok(token.every(value => Number.isSafeInteger(value) && value >= 0 && value < 2 ** 48));
+test('pairing binds the platform and bootstrap layout', () => {
   for (const platform of [2]) {
-    const bytes = hello(platform, token);
-    assert.equal(parseHello(bytes, token).platform, platform);
-    assert.throws(() => parseHello(hello(1, token), token), /console type/);
-    const other = [...token]; other[0] = (other[0] + 1) % 2 ** 48;
-    assert.throws(() => parseHello(bytes, other), /Pairing code/);
+    const bytes = hello(platform);
+    assert.equal(parseHello(bytes).platform, platform);
+    assert.throws(() => parseHello(hello(1)), /console type/);
+    assert.throws(() => parseHello(bytes), /Pairing code/);
     bytes.writeBigUInt64LE(0x80001n, 32);
-    assert.throws(() => parseHello(bytes, token), /bootstrap layout/);
+    assert.throws(() => parseHello(bytes), /bootstrap layout/);
   }
 });
 
@@ -169,8 +166,8 @@ test('read-only NCM list request decodes bounded system-program keys', () => {
 
 test('one host address and one BASIC command select the fixed Switch 2 path', async () => {
   assert.equal(await chooseHost(['192.0.2.10']), '192.0.2.10');
-  assert.equal(connectCommand('192.0.2.10', [1, 2, 3, 281474976710655]),
-    'V=START(39380,192,0,2,10,1,2,3,281474976710655)');
+  assert.equal(connectCommand('192.0.2.10'),
+    'V=START(39380,192,0,2,10)');
   await assert.rejects(chooseHost(['switch1']), /Usage/);
   await assert.rejects(chooseHost(['192.0.2.10', 'extra']), /Usage/);
   assert.deepEqual(addresses({a: [

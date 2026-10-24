@@ -75,6 +75,33 @@ If a run fails, keep the `runs` folder and restart the console before trying
 again. Enter `REMOVE` only once per application process. Logs and temporary
 memory captures stay in `runs`; they are not part of the distributable.
 
+## Optional system-code dump
+
+To capture installed system-program code from your own console, use this
+command **instead of** `node run.cjs` for a fresh attempt:
+
+```sh
+node dump-firmware.cjs [computer-IP]
+```
+
+Follow the same SmileBASIC steps above. The command first completes the normal
+4/4 exploit and verifies that the temporary FS instruction changes were
+restored. Before the runner closes its RPC, it asks NCM for the installed,
+full system-program IDs and reads each accessible CodeFS `main.npdm` and `main`
+file. If the dump completes, it then performs the normal exploit cleanup. You
+do not need to race to start a second command after 4/4; the ordinary `run.cjs`
+closes its RPC at the end. `node run.cjs --dump-firmware [computer-IP]` is
+equivalent.
+
+The output is in the repo-root `dumps/` directory. Open
+`dumps/firmware-dump.json` for the title inventory, per-file SHA-256 hashes,
+and entries whose CodeFS was unavailable. Captured files are in
+`dumps/<title-id>/` directories, alongside `dumps/ncm-system-programs.bin`.
+Starting another firmware-dump run clears the previous `dumps/` contents;
+ordinary `run.cjs` runs do not touch them. An unrecognized nonempty `dumps/`
+directory is never cleared automatically. Copy any partial or completed dump
+you want to keep before starting another dump run. Run logs remain in `runs/`.
+
 Startup removes only scratch paths backed by this checkout's prior run records.
 For an interrupted run from another checkout, `NS2_RECOVER_SCRATCH_REPORTS`
 can name its absolute `reserved-gap-*.json` report path (multiple paths are

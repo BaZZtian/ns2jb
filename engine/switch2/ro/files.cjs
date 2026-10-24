@@ -198,6 +198,9 @@ async function dispatch(context, request, state, domain) {
   }
   if (command === 'code-open') {
     const handle = Number(request.handle), title = BigInt(request.title);
+    const dumpDirectory = process.env.NS2_FIRMWARE_DUMP_DIR;
+    check(!request.dumpOutput || dumpDirectory && path.isAbsolute(dumpDirectory),
+      'Firmware capture requires a dedicated output directory');
     check(state.domainCopies?.some(item => item.handle === handle) && s.handles.has(handle),
       'Code open requires a retained copied root');
     const existing = !request.fresh && state.codeFileSystems?.find(item => item.title === title.toString() && s.handles.has(item.handle));
@@ -221,7 +224,9 @@ async function dispatch(context, request, state, domain) {
     check((await s.readOwned(output - 32, 32)).equals(guard) &&
       (await s.readOwned(output + infoSize, 32)).equals(guard), 'Code-info output exceeded its buffer');
     const info = await s.readOwned(output, infoSize);
-    const directory = path.join(__dirname, live.session + '-code-' + title.toString(16).padStart(16, '0'));
+    const directory = request.dumpOutput ?
+      path.join(dumpDirectory, title.toString(16).padStart(16, '0')) :
+      path.join(__dirname, live.session + '-code-' + title.toString(16).padStart(16, '0'));
     await fs.mkdir(directory, {recursive: true, mode: 0o700});
     entry.directory = directory;
     entry.codeInfo = {file: path.join(directory, 'code-info.bin'), sha256: hash(info),
@@ -243,31 +248,50 @@ async function dispatch(context, request, state, domain) {
       pathRequest(8, input, s.base + 0x2000));
     check(!opened.result, 'Code file did not open: ' + opened.canonicalResult);
     const child = domain.oneHandle(opened);
+    let safeToClose = false;
     try {
       const sizeReply = await s.ipc('RO pivot: code file size', child, 4);
+      safeToClose = true;
       check(!sizeReply.result, 'Code file size failed');
       const size = Number(sizeReply.data.readBigUInt64LE());
-      check(Number.isSafeInteger(size) && size > 0 && size <= 32 * 1024 * 1024, 'Unexpected code-file size');
+      check(Number.isSafeInteger(size) && size > 0 && size <= 256 * 1024 * 1024, 'Unexpected code-file size');
       const length = request.limit === undefined ? size : Math.min(size, Number(request.limit));
       check(Number.isInteger(length) && length > 0, 'Invalid capture limit');
-      const chunks = [], output = s.base + 0x4000;
+      const output = s.base + 0x4000;
       const capacity = Math.min(0x10000, s.bytes - 0x4000);
-      for (let offset = 0; offset < length;) {
-        const n = Math.min(capacity, length - offset), data = Buffer.alloc(24);
-        data.writeBigUInt64LE(BigInt(offset), 8); data.writeBigUInt64LE(BigInt(n), 16);
-        const reply = await s.ipc('RO pivot: read code file', child, 0, data,
-          {receive: [{address: output, size: n, mode: 1}]});
-        check(!reply.result && reply.data.readBigUInt64LE() === BigInt(n), 'Code file read was short or failed');
-        chunks.push(await s.readOwned(output, n));
-        offset += n;
-      }
-      const bytes = Buffer.concat(chunks), file = path.join(code.directory, name + (length === size ? '' : '.sample'));
-      await fs.writeFile(file, bytes, {mode: 0o600});
-      const entry = {at: new Date().toISOString(), name, file, size, captured: length, sha256: hash(bytes),
-        header: bytes.subarray(0, Math.min(0x100, bytes.length)).toString('hex')};
+      const file = path.join(code.directory, name + (length === size ? '' : '.sample'));
+      const temporary = file + '.partial';
+      const out = await fs.open(temporary, 'wx', 0o600);
+      const digest = crypto.createHash('sha256');
+      let header = Buffer.alloc(0), captured = 0;
+      try {
+        for (let offset = 0; offset < length;) {
+          const n = Math.min(capacity, length - offset), data = Buffer.alloc(24);
+          data.writeBigUInt64LE(BigInt(offset), 8); data.writeBigUInt64LE(BigInt(n), 16);
+          safeToClose = false;
+          const reply = await s.ipc('RO pivot: read code file', child, 0, data,
+            {receive: [{address: output, size: n, mode: 1}]});
+          if (reply.result) safeToClose = true;
+          check(!reply.result && reply.data.readBigUInt64LE() === BigInt(n), 'Code file read was short or failed');
+          const bytes = await s.readOwned(output, n);
+          safeToClose = true;
+          const written = await out.write(bytes, 0, bytes.length, offset);
+          check(written.bytesWritten === bytes.length, 'Local code-file write was short');
+          digest.update(bytes);
+          if (header.length < 0x100) header = Buffer.concat([header, bytes]).subarray(0, 0x100);
+          offset += n; captured = offset;
+        }
+        await out.sync();
+      } finally {await out.close();}
+      check(captured === length, 'Code-file capture stopped early');
+      await fs.link(temporary, file); // Never replace a pre-existing capture.
+      await fs.unlink(temporary);
+      const entry = {at: new Date().toISOString(), name, file, size, captured: length,
+        sha256: digest.digest('hex'),
+        header: header.toString('hex')};
       (code.files ||= []).push(entry); await save();
       return entry;
-    } finally { await s.close(child); }
+    } finally { if (safeToClose) await s.close(child); }
   }
   throw Error('Unknown native file operation');
 }

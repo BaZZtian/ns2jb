@@ -8,6 +8,9 @@ const {read, save, local, hash} = runtime;
 const check = (ok, message) => {if (!ok) throw Error(message);};
 
 async function main() {
+  check(process.argv.length === 2 || process.argv.length === 3 && process.argv[2] === '--dump-firmware',
+    'Usage: pipeline.cjs [--dump-firmware]');
+  const dumpFirmware = process.argv[2] === '--dump-firmware';
   const file = path.join(__dirname, 'pipeline.json');
   const record = {session: a.session, started: new Date().toISOString(), stages: []};
   await fs.writeFile(file, JSON.stringify(record) + '\n', {flag: 'wx', mode: 0o600});
@@ -75,12 +78,17 @@ async function main() {
     await save(runtime.executionFile, {verified: true, session: a.session, report: acquisition.report,
       pid: proof.pid, programId: '0400000000000037', payloadSha256: payload.sha256,
       proof: proof.file, launch: launch.file, identity: activation.file, handoff: handoff.file});
-    console.log('4/4 Running the FS demo and cleaning up');
+    console.log('4/4 Running the FS demo');
     await script('process', 'bind-notifier');
     const mapping = await script('process', 'qualify');
     check(mapping.verified && mapping.cleanup?.finished, 'Native process mapping did not qualify and clean up');
     const execution = await stage('FS instruction challenges', () => require('./process/fs-execute.cjs').main());
     check(execution.verified && execution.restored, 'FS execution or restoration did not verify');
+    if (dumpFirmware) {
+      console.log('Firmware: beginning read-only system-program CodeFS capture');
+      record.firmwareDump = await stage('Enumerate and capture installed system code',
+        () => require('./firmware-dump.cjs').main(execution.file));
+    }
     const cleanup = await stage('Release FS resources', async () => {
       const memory = await connect();
       const donor = await memory.request({command: 'root-native-donor-cleanup'});

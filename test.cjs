@@ -11,7 +11,7 @@ const {Connection, parseHello, pairingCode, MAGIC} = require('./engine/lib/conne
 const {callRecord} = require('./engine/lib/native.cjs');
 const {build} = require('./engine/shared/frames.cjs');
 const {plan} = require('./engine/switch2/memory/signed-cache-plan.cjs');
-const {chooseHost, addresses, connectCommand} = require('./run.cjs');
+const {chooseHost, addresses, connectCommand, prepareDumpDirectory} = require('./run.cjs');
 const {isUtf8} = require('node:buffer');
 
 async function channel(t, timeout = 1000) {
@@ -141,6 +141,31 @@ test('payloads have their declared hashes and contain NSO images', () => {
   }
 });
 
+test('read-only NCM list request decodes bounded system-program keys', () => {
+  const {listInput, parse} = require('./engine/switch2/ro/ncm.cjs');
+  const input = listInput();
+  assert.equal(input.length, 32);
+  assert.equal(input[0], 1);
+  assert.equal(input[1], 0);
+  assert.equal(input.readBigUInt64LE(24), 0xffffffffffffffffn);
+  const output = Buffer.alloc(1024 * 16), data = Buffer.alloc(8);
+  output.writeBigUInt64LE(0x040000000000000an);
+  output.writeUInt32LE(123, 8);
+  output[12] = 1;
+  output.writeBigUInt64LE(0x0400000000001000n, 16);
+  output.writeUInt32LE(456, 24);
+  output[28] = 1;
+  data.writeInt32LE(2, 0);
+  data.writeInt32LE(2, 4);
+  const result = parse({result: 0, data}, output);
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.keys.map(key => key.id),
+    ['0x040000000000000a', '0x0400000000001000']);
+  assert.deepEqual(result.keys.map(key => key.version), [123, 456]);
+  data.writeInt32LE(1025, 4);
+  assert.throws(() => parse({result: 0, data}, output), /count or output buffer/);
+});
+
 
 test('one host address and one BASIC command select the fixed Switch 2 path', async () => {
   assert.equal(await chooseHost(['192.0.2.10']), '192.0.2.10');
@@ -178,8 +203,28 @@ test('a stop prevents the next operation but still permits restoration', async t
   assert.ok(snapshots.some(row => row.mode === 'retiring' && row.checkpoint === 'restore'));
 });
 
+test('firmware dumps use a dedicated directory and clear only marked prior dumps', async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ns2jb-dump-test-'));
+  t.after(() => fs.rmSync(base, {recursive: true, force: true}));
+  const root = path.join(base, 'dumps');
+  fs.mkdirSync(root);
+  fs.writeFileSync(path.join(root, 'user-file'), 'keep');
+  await assert.rejects(prepareDumpDirectory(root), /unrecognized nonempty/);
+  assert.equal(fs.readFileSync(path.join(root, 'user-file'), 'utf8'), 'keep');
+  fs.unlinkSync(path.join(root, 'user-file'));
+  assert.deepEqual(await prepareDumpDirectory(root), {root, cleaned: true});
+  fs.writeFileSync(path.join(root, 'old-capture'), 'old');
+  assert.deepEqual(await prepareDumpDirectory(root), {root, cleaned: true});
+  assert.equal(fs.existsSync(path.join(root, 'old-capture')), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.ns2jb-firmware-dump.json'))).kind,
+    'ns2jb-system-code-dump');
+  fs.rmSync(root, {recursive: true});
+  fs.symlinkSync(base, root);
+  await assert.rejects(prepareDumpDirectory(root), /symlink/);
+});
+
 test('the engine has only local or Node dependencies, all present in the package', () => {
-  const root = __dirname, files = ['run.cjs'];
+  const root = __dirname, files = ['run.cjs', 'dump-firmware.cjs'];
   function walk(folder) {
     for (const item of fs.readdirSync(path.join(root, folder), {withFileTypes: true})) {
       const name = folder + '/' + item.name;

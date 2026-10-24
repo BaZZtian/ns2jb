@@ -14,6 +14,34 @@ const {serve} = require('./engine/lib/bridge.cjs');
 
 const port = 39380;
 const save = (file, value) => fs.writeFile(file, JSON.stringify(value, null, 2) + '\n', {mode: 0o600});
+const DUMP_MARKER = '.ns2jb-firmware-dump.json';
+
+async function prepareDumpDirectory(root = path.join(__dirname, 'dumps')) {
+  const parent = path.dirname(root);
+  const previous = await fs.lstat(root).catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (previous) {
+    if (!previous.isDirectory() || previous.isSymbolicLink() ||
+        previous.dev !== (await fs.stat(parent)).dev)
+      throw Error('Refusing to clean a symlink, mount, or non-directory at ' + root);
+    const marker = await fs.readFile(path.join(root, DUMP_MARKER), 'utf8').then(JSON.parse).catch(error => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!marker || marker.kind !== 'ns2jb-system-code-dump' || marker.version !== 1) {
+      if ((await fs.readdir(root)).length)
+        throw Error('Refusing to clean an unrecognized nonempty dumps directory: ' + root);
+    }
+    await fs.rm(root, {recursive: true});
+  }
+  await fs.mkdir(root, {mode: 0o700});
+  await fs.writeFile(path.join(root, DUMP_MARKER), JSON.stringify({
+    kind: 'ns2jb-system-code-dump', version: 1, started: new Date().toISOString()
+  }, null, 2) + '\n', {flag: 'wx', mode: 0o600});
+  return {root, cleaned: !!previous};
+}
 
 function addresses(interfaces = os.networkInterfaces()) {
   return [...new Set(Object.values(interfaces).flat().filter(a =>
@@ -44,7 +72,7 @@ function connectCommand(host, token) {
 }
 
 async function sourceDigest() {
-  const names = ['run.cjs', 'bootstrap.bas'];
+  const names = ['run.cjs', 'dump-firmware.cjs', 'bootstrap.bas'];
   async function walk(folder) {
     for (const entry of await fs.readdir(path.join(__dirname, folder), {withFileTypes: true})) {
       const name = folder + '/' + entry.name;
@@ -60,17 +88,19 @@ async function sourceDigest() {
   return crypto.createHash('sha256').update(JSON.stringify(entries)).digest('hex');
 }
 
-async function runEngine(directory) {
+async function runEngine(directory, dumpDirectory = null) {
   const log = await fs.open(path.join(directory, 'run.log'), 'wx', 0o600);
   const output = createWriteStream(null, {fd: log.fd, autoClose: false});
   try {
-    const child = spawn(process.execPath, [path.join(directory, 'switch2/pipeline.cjs')],
-      {cwd: directory, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
+    const child = spawn(process.execPath, [path.join(directory, 'switch2/pipeline.cjs'),
+      ...(dumpDirectory ? ['--dump-firmware'] : [])],
+      {cwd: directory, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+        env: {...process.env, ...(dumpDirectory ? {NS2_FIRMWARE_DUMP_DIR: dumpDirectory} : {})}});
     child.stdout.pipe(output, {end: false});
     child.stderr.pipe(output, {end: false});
     const lines = readline.createInterface({input: child.stdout});
     lines.on('line', line => {
-      if (/^[1-4]\/4 /.test(line)) console.log(line);
+      if (/^[1-4]\/4 |^Firmware: /.test(line)) console.log(line);
     });
     const code = await new Promise((resolve, reject) => {
       output.once('error', error => {child.kill('SIGTERM'); reject(error);});
@@ -86,12 +116,25 @@ async function runEngine(directory) {
 
 async function main(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === '--help') {
-    console.log('Usage: node run.cjs [computer-IP]\nSwitch 2 only. No npm install required. See README.md for the BASIC setup.');
+    console.log('Usage: node run.cjs [--dump-firmware] [computer-IP]\n' +
+      'Switch 2 only. No npm install required. See README.md for the BASIC setup.');
     return;
   }
-  const host = await chooseHost(args), token = pairingCode(), command = connectCommand(host, token);
+  const dumpFirmware = args[0] === '--dump-firmware';
+  const host = await chooseHost(dumpFirmware ? args.slice(1) : args);
+  const token = pairingCode(), command = connectCommand(host, token);
   const workspace = path.join(__dirname, 'runs');
   await fs.mkdir(workspace, {recursive: true, mode: 0o700});
+  let dumpDirectory;
+  if (dumpFirmware) {
+    const space = await fs.statfs(workspace);
+    if (BigInt(space.bavail) * BigInt(space.bsize) < 512n * 1024n * 1024n)
+      throw Error('The optional system-code dump needs at least 512 MiB free on the computer before starting.');
+    const prepared = await prepareDumpDirectory();
+    dumpDirectory = prepared.root;
+    if (prepared.cleaned) console.log('Previous system-code dump removed from ' + dumpDirectory);
+    console.log('System-code dump folder: ' + dumpDirectory);
+  }
   const directory = await fs.mkdtemp(path.join(workspace, 'switch2-'));
   await fs.writeFile(path.join(directory, 'connect.txt'), command + '\n', {mode: 0o600});
   const result = {platform: 2, sourceSha256: await sourceDigest(), started: new Date().toISOString(), verified: false};
@@ -114,10 +157,15 @@ async function main(args = process.argv.slice(2)) {
       addresses: {...connected.addresses, session: path.basename(directory), target: 'switch2'}});
     for (const name of ['shared', 'switch2'])
       await fs.cp(path.join(__dirname, 'engine', name), path.join(directory, name), {recursive: true});
-    await runEngine(directory);
+    await runEngine(directory, dumpDirectory);
     result.fs = JSON.parse(await fs.readFile(path.join(directory, 'switch2/fs-execution-current.json')));
     if (!result.fs.verified || !result.fs.restored || !result.fs.cleanup?.cleanedUp)
       throw Error('FS execution, restoration, or cleanup did not finish.');
+    if (dumpFirmware) {
+      result.firmwareDump = JSON.parse(await fs.readFile(path.join(dumpDirectory, 'firmware-dump.json')));
+      if (!result.firmwareDump.complete || result.firmwareDump.entries.length !== result.firmwareDump.inventory.total)
+        throw Error('The system-code dump did not finish.');
+    }
     result.verified = true;
   } catch (error) {result.error = error.message; failure = error;}
   finally {
@@ -130,9 +178,11 @@ async function main(args = process.argv.slice(2)) {
   }
   if (failure) throw Error(failure.message + '\nDetails: ' + directory);
   console.log('FS execution verified. Original instructions restored and scratch cleaned up.');
+  if (dumpFirmware) console.log('System-program CodeFS dump: ' +
+    path.join(dumpDirectory, 'firmware-dump.json'));
   console.log('Restart the console when finished.');
   return result;
 }
 
-module.exports = {main, addresses, chooseHost, connectCommand, sourceDigest};
+module.exports = {main, addresses, chooseHost, connectCommand, sourceDigest, prepareDumpDirectory};
 if (require.main === module) main().catch(error => {console.error(error.message); process.exitCode = 1;});

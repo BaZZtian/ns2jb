@@ -7,7 +7,7 @@ const MAGIC = 0x31545344;
 // TCP may split a record anywhere. A timeout ends the connection; requests
 // cannot be replayed because a native operation might already have completed.
 class Connection {
-  constructor(socket, timeout = 30000) {
+  constructor(socket, timeout = 120000) {
     this.socket = socket;
     this.timeout = timeout;
     this.buffer = Buffer.alloc(0);

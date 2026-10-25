@@ -7,11 +7,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {once} = require('node:events');
-const {Connection, parseHello, pairingCode, MAGIC} = require('./engine/lib/connection.cjs');
+const {EventEmitter} = require('node:events');
+const {Connection, parseHello, MAGIC} = require('./engine/lib/connection.cjs');
 const {callRecord} = require('./engine/lib/native.cjs');
 const {build} = require('./engine/shared/frames.cjs');
 const {plan} = require('./engine/switch2/memory/signed-cache-plan.cjs');
-const {chooseHost, addresses, connectCommand, prepareDumpDirectory} = require('./run.cjs');
+const {chooseHost, addresses, connectCommand, prepareDumpDirectory,
+  waitForRpcStop} = require('./run.cjs');
+const {serve} = require('./engine/lib/bridge.cjs');
+const {request: rpcRequest} = require('./rpc.cjs');
 const {isUtf8} = require('node:buffer');
 
 async function channel(t, timeout = 1000) {
@@ -58,6 +62,30 @@ test('a disconnect cannot turn a partial record into a reply', async t => {
   await assert.rejects(connection.read(8), /disconnected|closed/);
 });
 
+test('held RPC ends on operator signal or console disconnect without leaking listeners', async () => {
+  for (const [event, expected] of [['SIGINT', 'SIGINT'], ['SIGTERM', 'SIGTERM'], ['close', 'disconnected']]) {
+    const signals = new EventEmitter(), socket = new EventEmitter();
+    const waiting = waitForRpcStop({socket}, signals);
+    (event === 'close' ? socket : signals).emit(event);
+    assert.equal(await waiting, expected);
+    assert.equal(signals.listenerCount('SIGINT'), 0);
+    assert.equal(signals.listenerCount('SIGTERM'), 0);
+    assert.equal(socket.listenerCount('close'), 0);
+  }
+});
+
+test('held RPC client reaches the local bridge and reports request errors', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ns2jb-rpc-test-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const native = {connection: {error: null}, calls: 7};
+  const bridge = await serve(native);
+  t.after(() => bridge.close());
+  const file = path.join(root, 'connection.json');
+  fs.writeFileSync(file, JSON.stringify({port: bridge.port}));
+  assert.deepEqual(await rpcRequest(root, {command: 'status'}), {ready: true, calls: 7});
+  await assert.rejects(rpcRequest(root, {command: 'missing'}), /Unknown bridge command/);
+});
+
 function hello(platform) {
   const sdk = 0x4012300000, main = 0x3012300000;
   const values = [MAGIC, 1, platform, 0x5012340000, 0x80000, main, sdk,
@@ -68,12 +96,11 @@ function hello(platform) {
   return bytes;
 }
 
-test('pairing binds the platform and bootstrap layout', () => {
+test('console greeting binds the platform and bootstrap layout', () => {
   for (const platform of [2]) {
     const bytes = hello(platform);
     assert.equal(parseHello(bytes).platform, platform);
     assert.throws(() => parseHello(hello(1)), /console type/);
-    assert.throws(() => parseHello(bytes), /Pairing code/);
     bytes.writeBigUInt64LE(0x80001n, 32);
     assert.throws(() => parseHello(bytes), /bootstrap layout/);
   }
@@ -221,7 +248,7 @@ test('firmware dumps use a dedicated directory and clear only marked prior dumps
 });
 
 test('the engine has only local or Node dependencies, all present in the package', () => {
-  const root = __dirname, files = ['run.cjs', 'dump-firmware.cjs'];
+  const root = __dirname, files = ['run.cjs', 'rpc.cjs', 'dump-firmware.cjs'];
   function walk(folder) {
     for (const item of fs.readdirSync(path.join(root, folder), {withFileTypes: true})) {
       const name = folder + '/' + item.name;

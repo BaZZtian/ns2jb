@@ -1,8 +1,7 @@
 const http = require('node:http');
-const crypto = require('node:crypto');
 
 // Stage programs share one native connection through this local, serialized
-// bridge. Its address and token exist only in the current launch directory.
+// bridge. Its address exists only in the current launch directory.
 async function serve(native) {
   let queue = Promise.resolve();
   const enqueue = task => {

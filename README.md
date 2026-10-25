@@ -71,6 +71,33 @@ Keep SmileBASIC open and the computer awake until **FS execution verified**.
 Restart the console when finished; that also restores the original RO process.
 This demo does not install custom firmware or persistence.
 
+## Optional held RPC
+
+To keep the same SmileBASIC-backed RPC available after the 4/4 checks, start a
+fresh run with `node run.cjs --rpc [computer-IP]`. If you use the local keyboard
+launcher, run `./connect-upstream.sh --rpc [computer-IP]` from its parent folder.
+The normal run still closes its RPC after verification.
+
+Once 4/4 is verified, the runner prints its `runs/switch2-*` folder and stays
+open. In another terminal, check the connection with:
+
+```sh
+node rpc.cjs runs/switch2-RUNID status
+```
+
+The client also accepts one JSON bridge request, for example
+`node rpc.cjs runs/switch2-RUNID '{"command":"query","address":4294967296}'`.
+This is the existing native RPC, not a new process or unrestricted FS API.
+It can read or change live process memory; incorrect calls can crash the app or
+console. Requests are serialized, and a timed-out native request must not be
+replayed because its outcome is uncertain. The bridge listens only on the PC's
+loopback interface; it has no authentication, so use a trusted PC and stop it
+when finished.
+
+Keep SmileBASIC open. The RPC does **not** survive fully closing the app or a
+console restart. Press Ctrl-C in the runner terminal when finished; its bridge
+and console connection close cleanly. A disconnect also ends the held run.
+
 If a run fails, keep the `runs` folder and restart the console before trying
 again. Enter `REMOVE` only once per application process. Logs and temporary
 memory captures stay in `runs`; they are not part of the distributable.
@@ -91,7 +118,8 @@ full system-program IDs and reads each accessible CodeFS `main.npdm` and `main`
 file. If the dump completes, it then performs the normal exploit cleanup. You
 do not need to race to start a second command after 4/4; the ordinary `run.cjs`
 closes its RPC at the end. `node run.cjs --dump-firmware [computer-IP]` is
-equivalent.
+equivalent. You can combine `--dump-firmware --rpc` to hold the RPC after the
+dump finishes.
 
 The output is in the repo-root `dumps/` directory. Open
 `dumps/firmware-dump.json` for the title inventory, per-file SHA-256 hashes,

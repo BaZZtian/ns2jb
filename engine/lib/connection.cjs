@@ -1,5 +1,4 @@
 const net = require('node:net');
-const crypto = require('node:crypto');
 
 const HELLO_BYTES = 128;
 const MAGIC = 0x31545344;
@@ -67,10 +66,6 @@ class Connection {
   close() { this.fail(Error('Connection closed')); }
 }
 
-function pairingCode() {
-  return Array.from({length: 4}, () => crypto.randomBytes(6).readUIntLE(0, 6));
-}
-
 function parseHello(bytes) {
   if (bytes.length !== HELLO_BYTES) throw Error('Incomplete console greeting');
   const words = Array.from({length: 16}, (_, index) => bytes.readBigUInt64LE(index * 8));
@@ -131,4 +126,4 @@ async function listen({host, port, onWaiting, timeout = 10 * 60 * 1000}) {
   });
 }
 
-module.exports = {Connection, HELLO_BYTES, MAGIC, pairingCode, parseHello, listen};
+module.exports = {Connection, HELLO_BYTES, MAGIC, parseHello, listen};

@@ -7,7 +7,7 @@ const net = require('node:net');
 const crypto = require('node:crypto');
 const {spawn} = require('node:child_process');
 const readline = require('node:readline');
-const {pairingCode, listen} = require('./engine/lib/connection.cjs');
+const {listen} = require('./engine/lib/connection.cjs');
 const {NativeClient} = require('./engine/lib/native.cjs');
 const {qualify} = require('./engine/lib/qualify.cjs');
 const {serve} = require('./engine/lib/bridge.cjs');
@@ -72,7 +72,7 @@ function connectCommand(host) {
 }
 
 async function sourceDigest() {
-  const names = ['run.cjs', 'dump-firmware.cjs', 'bootstrap.bas'];
+  const names = ['run.cjs', 'rpc.cjs', 'dump-firmware.cjs', 'bootstrap.bas'];
   async function walk(folder) {
     for (const entry of await fs.readdir(path.join(__dirname, folder), {withFileTypes: true})) {
       const name = folder + '/' + entry.name;
@@ -114,14 +114,37 @@ async function runEngine(directory, dumpDirectory = null) {
   }
 }
 
+function waitForRpcStop(connection, signals = process) {
+  return new Promise(resolve => {
+    const socket = connection.socket;
+    let settled = false;
+    const finish = reason => {
+      if (settled) return;
+      settled = true;
+      signals.removeListener('SIGINT', interrupt);
+      signals.removeListener('SIGTERM', terminate);
+      socket.removeListener('close', disconnected);
+      resolve(reason);
+    };
+    const interrupt = () => finish('SIGINT');
+    const terminate = () => finish('SIGTERM');
+    const disconnected = () => finish('disconnected');
+    signals.once('SIGINT', interrupt);
+    signals.once('SIGTERM', terminate);
+    socket.once('close', disconnected);
+    if (connection.error || socket.destroyed) finish('disconnected');
+  });
+}
+
 async function main(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === '--help') {
-    console.log('Usage: node run.cjs [--dump-firmware] [computer-IP]\n' +
+    console.log('Usage: node run.cjs [--rpc] [--dump-firmware] [computer-IP]\n' +
       'Switch 2 only. No npm install required. See README.md for the BASIC setup.');
     return;
   }
-  const dumpFirmware = args[0] === '--dump-firmware';
-  const host = await chooseHost(dumpFirmware ? args.slice(1) : args);
+  const rpcMode = args.includes('--rpc') || process.env.NS2_RPC_MODE === '1';
+  const dumpFirmware = args.includes('--dump-firmware');
+  const host = await chooseHost(args.filter(arg => arg !== '--rpc' && arg !== '--dump-firmware'));
   const command = connectCommand(host);
   const workspace = path.join(__dirname, 'runs');
   await fs.mkdir(workspace, {recursive: true, mode: 0o700});
@@ -167,6 +190,17 @@ async function main(args = process.argv.slice(2)) {
         throw Error('The system-code dump did not finish.');
     }
     result.verified = true;
+    if (rpcMode) {
+      result.rpc = {mode: 'held', state: 'listening', opened: new Date().toISOString()};
+      await save(path.join(directory, 'result.json'), result);
+      console.log('4/4 verified. SmileBASIC RPC is held while this process and the app stay open.');
+      console.log('Run folder: ' + directory);
+      console.log('Check it locally: node rpc.cjs ' + directory + ' status');
+      console.log('Stop with Ctrl-C; do not close SmileBASIC until finished.');
+      const reason = await waitForRpcStop(native.connection);
+      result.rpc = {...result.rpc, state: 'closed', reason, closed: new Date().toISOString()};
+      if (reason === 'disconnected') throw Error('Held RPC disconnected; do not replay an uncertain native request.');
+    }
   } catch (error) {result.error = error.message; failure = error;}
   finally {
     for (const [name, close] of [['bridge', () => bridge?.close()], ['connection', () => native?.stop()]]) {
@@ -184,5 +218,6 @@ async function main(args = process.argv.slice(2)) {
   return result;
 }
 
-module.exports = {main, addresses, chooseHost, connectCommand, sourceDigest, prepareDumpDirectory};
+module.exports = {main, addresses, chooseHost, connectCommand, sourceDigest, prepareDumpDirectory,
+  waitForRpcStop};
 if (require.main === module) main().catch(error => {console.error(error.message); process.exitCode = 1;});

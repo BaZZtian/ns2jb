@@ -67,8 +67,9 @@ async function chooseHost(args) {
   } finally {input.close();}
 }
 
-function connectCommand(host) {
-  return `V=START(${[port, ...host.split('.')].join(',')})`;
+function connectCommand(host, basicArgs = 5) {
+  if (![5, 9].includes(basicArgs)) throw Error('NS2_BASIC_ARITY must be 5 or 9');
+  return `V=START(${[port, ...host.split('.'), ...(basicArgs === 9 ? [0, 0, 0, 0] : [])].join(',')})`;
 }
 
 async function sourceDigest() {
@@ -88,33 +89,59 @@ async function sourceDigest() {
   return crypto.createHash('sha256').update(JSON.stringify(entries)).digest('hex');
 }
 
-async function runEngine(directory, dumpDirectory = null) {
+async function startEngine(directory, dumpDirectory = null, held = false) {
   const log = await fs.open(path.join(directory, 'run.log'), 'wx', 0o600);
   const output = createWriteStream(null, {fd: log.fd, autoClose: false});
-  try {
-    const child = spawn(process.execPath, [path.join(directory, 'switch2/pipeline.cjs'),
-      ...(dumpDirectory ? ['--dump-firmware'] : [])],
-      {cwd: directory, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-        env: {...process.env, ...(dumpDirectory ? {NS2_FIRMWARE_DUMP_DIR: dumpDirectory} : {})}});
-    child.stdout.pipe(output, {end: false});
-    child.stderr.pipe(output, {end: false});
-    const lines = readline.createInterface({input: child.stdout});
-    lines.on('line', line => {
-      if (/^[1-4]\/4 |^Firmware: /.test(line)) console.log(line);
-    });
-    const code = await new Promise((resolve, reject) => {
-      output.once('error', error => {child.kill('SIGTERM'); reject(error);});
-      child.once('error', reject); child.once('close', resolve);
-    });
-    if (code !== 0) throw Error('The run stopped. Keep the runs folder and restart the console before trying again.');
-  } finally {
+  const child = spawn(process.execPath, [path.join(directory, 'switch2/pipeline.cjs'),
+    ...(dumpDirectory ? ['--dump-firmware'] : []), ...(held ? ['--hold-rpc'] : [])],
+    {cwd: directory, stdio: ['ignore', 'pipe', 'pipe', ...(held ? ['ipc'] : [])], windowsHide: true,
+      env: {...process.env, ...(dumpDirectory ? {NS2_FIRMWARE_DUMP_DIR: dumpDirectory} : {})}});
+  child.stdout.pipe(output, {end: false});
+  child.stderr.pipe(output, {end: false});
+  const lines = readline.createInterface({input: child.stdout});
+  lines.on('line', line => {
+    if (/^[1-4]\/4 |^Firmware: /.test(line)) console.log(line);
+  });
+  let childError;
+  child.once('error', error => {childError = error;});
+  output.once('error', error => {childError = error; child.kill('SIGTERM');});
+  const finished = new Promise(resolve => child.once('close', (code, signal) => resolve({code, signal})))
+    .then(async outcome => {
     if (!output.destroyed)
       await new Promise((resolve, reject) => {output.once('error', reject); output.end(resolve);});
     await log.close();
-  }
+    return {...outcome, error: childError};
+  });
+  const ready = held ? new Promise((resolve, reject) => {
+    const message = value => {
+      if (value?.type !== 'held-ready') return;
+      child.removeListener('message', message);
+      resolve(value);
+    };
+    child.on('message', message);
+    finished.then(outcome => {
+      child.removeListener('message', message);
+      reject(outcome.error || Error('The FS endpoint exited before the held session was ready.'));
+    }, reject);
+  }) : null;
+  let releaseSent = false;
+  return {child, finished, ready,
+    async release() {
+      if (held && !releaseSent && child.connected) {
+        releaseSent = true;
+        child.send({type: 'release'});
+      }
+      return finished;
+    }};
 }
 
-function waitForRpcStop(connection, signals = process) {
+function checkEngine(outcome) {
+  if (outcome.error) throw outcome.error;
+  if (outcome.code !== 0)
+    throw Error('The run stopped. Keep the runs folder and restart the console before trying again.');
+}
+
+function waitForRpcStop(connection, signals = process, engineFinished = null) {
   return new Promise(resolve => {
     const socket = connection.socket;
     let settled = false;
@@ -132,6 +159,7 @@ function waitForRpcStop(connection, signals = process) {
     signals.once('SIGINT', interrupt);
     signals.once('SIGTERM', terminate);
     socket.once('close', disconnected);
+    if (engineFinished) engineFinished.then(() => finish('engine-exited'), () => finish('engine-exited'));
     if (connection.error || socket.destroyed) finish('disconnected');
   });
 }
@@ -145,7 +173,8 @@ async function main(args = process.argv.slice(2)) {
   const rpcMode = args.includes('--rpc') || process.env.NS2_RPC_MODE === '1';
   const dumpFirmware = args.includes('--dump-firmware');
   const host = await chooseHost(args.filter(arg => arg !== '--rpc' && arg !== '--dump-firmware'));
-  const command = connectCommand(host);
+  const basicArgs = Number(process.env.NS2_BASIC_ARITY || 5);
+  const command = connectCommand(host, basicArgs);
   const workspace = path.join(__dirname, 'runs');
   await fs.mkdir(workspace, {recursive: true, mode: 0o700});
   let dumpDirectory;
@@ -161,7 +190,7 @@ async function main(args = process.argv.slice(2)) {
   const directory = await fs.mkdtemp(path.join(workspace, 'switch2-'));
   await fs.writeFile(path.join(directory, 'connect.txt'), command + '\n', {mode: 0o600});
   const result = {platform: 2, sourceSha256: await sourceDigest(), started: new Date().toISOString(), verified: false};
-  let native, bridge, failure;
+  let native, bridge, engine, failure;
   try {
     const connected = await listen({host, port, onWaiting() {
       console.log(`Waiting for Switch 2 at ${host}:${port}.`);
@@ -169,6 +198,10 @@ async function main(args = process.argv.slice(2)) {
       console.log('  RUN\n  REMOVE NSR,&H60000000,&H3FFFFFFF');
       console.log('After the expected Out of memory message, enter:');
       console.log('  ' + command);
+      if (basicArgs === 5) {
+        console.log('If BASIC says Wrong number of arguments, use the older nine-argument form instead:');
+        console.log('  ' + connectCommand(host, 9));
+      }
       console.log('Run folder: ' + directory);
     }});
     native = new NativeClient(connected.connection, connected.addresses);
@@ -180,10 +213,14 @@ async function main(args = process.argv.slice(2)) {
       addresses: {...connected.addresses, session: path.basename(directory), target: 'switch2'}});
     for (const name of ['shared', 'switch2'])
       await fs.cp(path.join(__dirname, 'engine', name), path.join(directory, name), {recursive: true});
-    await runEngine(directory, dumpDirectory);
+    engine = await startEngine(directory, dumpDirectory, rpcMode);
+    if (rpcMode) await engine.ready;
+    else checkEngine(await engine.finished);
     result.fs = JSON.parse(await fs.readFile(path.join(directory, 'switch2/fs-execution-current.json')));
-    if (!result.fs.verified || !result.fs.restored || !result.fs.cleanup?.cleanedUp)
-      throw Error('FS execution, restoration, or cleanup did not finish.');
+    if (!result.fs.verified || !result.fs.restored ||
+        (rpcMode ? !result.fs.retainedEndpoint?.ready || !result.fs.cleanup?.deferred :
+          !result.fs.cleanup?.cleanedUp))
+      throw Error('FS execution, restoration, or endpoint state did not verify.');
     if (dumpFirmware) {
       result.firmwareDump = JSON.parse(await fs.readFile(path.join(dumpDirectory, 'firmware-dump.json')));
       if (!result.firmwareDump.complete || result.firmwareDump.entries.length !== result.firmwareDump.inventory.total)
@@ -193,16 +230,32 @@ async function main(args = process.argv.slice(2)) {
     if (rpcMode) {
       result.rpc = {mode: 'held', state: 'listening', opened: new Date().toISOString()};
       await save(path.join(directory, 'result.json'), result);
-      console.log('4/4 verified. SmileBASIC RPC is held while this process and the app stay open.');
+      console.log('4/4 verified. SmileBASIC RPC and FS memory endpoint remain live while this process and the app stay open.');
       console.log('Run folder: ' + directory);
       console.log('Check it locally: node rpc.cjs ' + directory + ' status');
       console.log('Stop with Ctrl-C; do not close SmileBASIC until finished.');
-      const reason = await waitForRpcStop(native.connection);
+      const reason = await waitForRpcStop(native.connection, process, engine.finished);
       result.rpc = {...result.rpc, state: 'closed', reason, closed: new Date().toISOString()};
+      if (reason === 'engine-exited') throw Error('The held FS endpoint exited unexpectedly.');
+      checkEngine(await engine.release());
+      result.fs = JSON.parse(await fs.readFile(path.join(directory, 'switch2/fs-execution-current.json')));
+      if (!result.fs.cleanup?.cleanedUp) throw Error('Held FS resources did not clean up.');
       if (reason === 'disconnected') throw Error('Held RPC disconnected; do not replay an uncertain native request.');
     }
-  } catch (error) {result.error = error.message; failure = error;}
+  } catch (error) {
+    if (error.message === 'The FS endpoint exited before the held session was ready.') {
+      try {
+        const pipeline = JSON.parse(await fs.readFile(path.join(directory, 'switch2/pipeline.json')));
+        if (pipeline.error) error = Error(pipeline.error.split('\n')[0]);
+      } catch { /* The run log remains available if no pipeline report exists. */ }
+    }
+    result.error = error.message; failure = error;
+  }
   finally {
+    if (engine && rpcMode) {
+      try {checkEngine(await engine.release());}
+      catch (error) {(result.cleanupErrors ||= []).push({name: 'FS endpoint', error: error.message}); failure ||= error;}
+    }
     for (const [name, close] of [['bridge', () => bridge?.close()], ['connection', () => native?.stop()]]) {
       try {await close();}
       catch (error) {(result.cleanupErrors ||= []).push({name, error: error.message}); failure ||= error;}
@@ -219,5 +272,5 @@ async function main(args = process.argv.slice(2)) {
 }
 
 module.exports = {main, addresses, chooseHost, connectCommand, sourceDigest, prepareDumpDirectory,
-  waitForRpcStop};
+  startEngine, checkEngine, waitForRpcStop};
 if (require.main === module) main().catch(error => {console.error(error.message); process.exitCode = 1;});

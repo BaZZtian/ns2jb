@@ -8,9 +8,12 @@ const {read, save, local, hash} = runtime;
 const check = (ok, message) => {if (!ok) throw Error(message);};
 
 async function main() {
-  check(process.argv.length === 2 || process.argv.length === 3 && process.argv[2] === '--dump-firmware',
-    'Usage: pipeline.cjs [--dump-firmware]');
-  const dumpFirmware = process.argv[2] === '--dump-firmware';
+  const flags = process.argv.slice(2);
+  check(flags.length <= 2 && flags.every(flag => ['--dump-firmware', '--hold-rpc'].includes(flag)) &&
+    new Set(flags).size === flags.length, 'Usage: pipeline.cjs [--dump-firmware] [--hold-rpc]');
+  const dumpFirmware = flags.includes('--dump-firmware');
+  const holdRpc = flags.includes('--hold-rpc');
+  check(!holdRpc || typeof process.send === 'function', 'Held FS mode requires runner IPC');
   const file = path.join(__dirname, 'pipeline.json');
   const record = {session: a.session, started: new Date().toISOString(), stages: []};
   await fs.writeFile(file, JSON.stringify(record) + '\n', {flag: 'wx', mode: 0o600});
@@ -90,12 +93,27 @@ async function main() {
       record.firmwareDump = await stage('Enumerate and capture installed system code',
         () => require('./firmware-dump.cjs').main(execution.file));
     }
-    const cleanup = await stage('Release FS resources', async () => {
+    const donorCleanup = await stage('Remove RO donor files', async () => {
       const memory = await connect();
       const donor = await memory.request({command: 'root-native-donor-cleanup'});
       check(donor.cleanedUp, 'Donor files did not clean up');
-      return {...await acquisition.retire(), donor};
+      return donor;
     });
+    if (holdRpc) {
+      const held = {...execution, cleanup: {deferred: true, donor: donorCleanup},
+        retainedEndpoint: {ready: true, session: a.session, socketPath: acquisition.socketPath},
+        started: record.started};
+      await save(path.join(__dirname, 'fs-execution-current.json'), held);
+      record.hold = {state: 'ready', started: new Date().toISOString()};
+      await save(file, record);
+      const release = require('./hold.cjs').waitForRelease();
+      process.send({type: 'held-ready', session: a.session});
+      const reason = await release;
+      record.hold = {...record.hold, state: 'releasing', reason, released: new Date().toISOString()};
+      await save(file, record);
+    }
+    const cleanup = await stage('Release FS resources', async () =>
+      ({...await acquisition.retire(), donor: donorCleanup}));
     const result = {...execution, cleanup, started: record.started, completed: new Date().toISOString()};
     await save(path.join(__dirname, 'fs-execution-current.json'), result);
     record.verified = true; record.result = result;

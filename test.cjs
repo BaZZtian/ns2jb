@@ -13,7 +13,8 @@ const {callRecord} = require('./engine/lib/native.cjs');
 const {build} = require('./engine/shared/frames.cjs');
 const {plan} = require('./engine/switch2/memory/signed-cache-plan.cjs');
 const {chooseHost, addresses, connectCommand, prepareDumpDirectory,
-  waitForRpcStop} = require('./run.cjs');
+  startEngine, checkEngine, waitForRpcStop} = require('./run.cjs');
+const {waitForRelease} = require('./engine/switch2/hold.cjs');
 const {serve} = require('./engine/lib/bridge.cjs');
 const {request: rpcRequest} = require('./rpc.cjs');
 const {isUtf8} = require('node:buffer');
@@ -72,6 +73,35 @@ test('held RPC ends on operator signal or console disconnect without leaking lis
     assert.equal(signals.listenerCount('SIGTERM'), 0);
     assert.equal(socket.listenerCount('close'), 0);
   }
+});
+
+test('held FS endpoint waits for an explicit release or parent disconnect', async () => {
+  for (const event of ['release', 'disconnect']) {
+    const channel = new EventEmitter();
+    channel.send = () => {};
+    channel.connected = true;
+    const pending = waitForRelease(channel);
+    if (event === 'release') channel.emit('message', {type: 'release'});
+    else channel.emit('disconnect');
+    assert.equal(await pending, event === 'release' ? 'release' : 'parent-disconnected');
+    assert.equal(channel.listenerCount('message'), 0);
+    assert.equal(channel.listenerCount('disconnect'), 0);
+  }
+});
+
+test('held engine remains alive until the runner releases it', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ns2jb-held-engine-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  fs.mkdirSync(path.join(root, 'switch2'));
+  fs.writeFileSync(path.join(root, 'switch2/pipeline.cjs'),
+    "process.on('message', value => {if (value?.type === 'release') process.exit(0)});" +
+    "process.send({type: 'held-ready', session: 'test'});\n");
+  const engine = await startEngine(root, null, true);
+  assert.equal((await engine.ready).session, 'test');
+  assert.equal(engine.child.exitCode, null);
+  checkEngine(await engine.release());
+  assert.equal(engine.child.exitCode, 0);
+  assert.ok(fs.existsSync(path.join(root, 'run.log')));
 });
 
 test('held RPC client reaches the local bridge and reports request errors', async t => {
@@ -195,6 +225,9 @@ test('one host address and one BASIC command select the fixed Switch 2 path', as
   assert.equal(await chooseHost(['192.0.2.10']), '192.0.2.10');
   assert.equal(connectCommand('192.0.2.10'),
     'V=START(39380,192,0,2,10)');
+  assert.equal(connectCommand('192.0.2.10', 9),
+    'V=START(39380,192,0,2,10,0,0,0,0)');
+  assert.throws(() => connectCommand('192.0.2.10', 8), /NS2_BASIC_ARITY/);
   await assert.rejects(chooseHost(['switch1']), /Usage/);
   await assert.rejects(chooseHost(['192.0.2.10', 'extra']), /Usage/);
   assert.deepEqual(addresses({a: [

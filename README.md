@@ -67,6 +67,14 @@ import file; there is no published download key.
    Confirm the load. The **Out of memory** message from `REMOVE` is expected.
    Then enter the **`V=START(...)`** line printed by the computer.
 
+   If SmileBASIC says **Wrong number of arguments**, your saved `NS2` may be
+   the older nine-argument bootstrap. Use the second `V=START(...)` line the
+   computer prints: it has the same port and four IP numbers, followed by
+   `,0,0,0,0`. Do **not** repeat `RUN` or `REMOVE`; enter just that replacement
+   `START` command while the computer is still waiting. The `bootstrap.bas`
+   supplied with this repo uses the normal five-argument form, so alternatively
+   you can rewrite the bootstrap.
+
 Keep SmileBASIC open and the computer awake until **FS execution verified**.
 Restart the console when finished; that also restores the original RO process.
 This demo does not install custom firmware or persistence.
@@ -79,7 +87,10 @@ launcher, run `./connect-upstream.sh --rpc [computer-IP]` from its parent folder
 The normal run still closes its RPC after verification.
 
 Once 4/4 is verified, the runner prints its `runs/switch2-*` folder and stays
-open. In another terminal, check the connection with:
+open. In this mode it keeps both the SmileBASIC RPC and the existing FS memory
+endpoint alive; it does not retire the FS worker after verification. The FS
+instruction changes have already been restored, and the temporary RO donor
+files have been cleaned up. In another terminal, check the connection with:
 
 ```sh
 node rpc.cjs runs/switch2-RUNID status
@@ -94,9 +105,12 @@ replayed because its outcome is uncertain. The bridge listens only on the PC's
 loopback interface; it has no authentication, so use a trusted PC and stop it
 when finished.
 
-Keep SmileBASIC open. The RPC does **not** survive fully closing the app or a
-console restart. Press Ctrl-C in the runner terminal when finished; its bridge
-and console connection close cleanly. A disconnect also ends the held run.
+Keep SmileBASIC open. This RPC does **not** survive fully closing the app or a
+console restart. Press Ctrl-C in the runner terminal when finished; only then
+does the runner retire the FS endpoint and close the bridge and console
+connection. A disconnect also ends the held run and attempts cleanup. A failed
+or interrupted cleanup may require a console restart. Tools that use the FS
+endpoint must finish their requests before the held run is stopped.
 
 If a run fails, keep the `runs` folder and restart the console before trying
 again. Enter `REMOVE` only once per application process. Logs and temporary

@@ -124,8 +124,7 @@ async function dispatch(context, request, state, domain) {
             if (current.equals(expected)) {
               if (!donor.files.some(f => f.name === name)) donor.files.push({name, file, size: expected.length,
                 sha256: hash(expected), verified: true, reused: true});
-            } else if (name === 'main') stale = {name, size: length, sha256: hash(current)};
-            else throw Error('Existing /' + name + ' differs; it was not removed');
+            } else stale = {name, size: length, sha256: hash(current)};
           } finally { await s.close(child); }
           if (stale) {
             donor.pendingStaleRemoval = stale; await save();

@@ -276,7 +276,9 @@ test('firmware dumps use a dedicated directory and clear only marked prior dumps
   assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.ns2jb-firmware-dump.json'))).kind,
     'ns2jb-system-code-dump');
   fs.rmSync(root, {recursive: true});
-  fs.symlinkSync(base, root);
+  // A Windows directory symlink needs Developer Mode or admin; a junction
+  // exercises the same reparse-point path without that privilege.
+  fs.symlinkSync(base, root, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(prepareDumpDirectory(root), /symlink/);
 });
 
@@ -298,7 +300,10 @@ test('the engine has only local or Node dependencies, all present in the package
       if (!dependency.startsWith('.')) {
         assert.ok(dependency.startsWith('node:'), name + ': external dependency ' + dependency);
       } else {
-        const relative = path.relative(root, path.resolve(root, path.dirname(name), dependency));
+        // `present` is built with '/' separators; path.relative() returns '\' on
+        // Windows. Normalize before comparing or every relative require fails.
+        const relative = path.relative(root, path.resolve(root, path.dirname(name), dependency))
+          .split(path.sep).join('/');
         assert.ok(present.has(relative) || generated.has(relative), name + ': missing ' + relative);
       }
     }

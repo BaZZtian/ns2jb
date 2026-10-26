@@ -1,0 +1,8 @@
+# The captures are verified with SHA256SUMS, which upstream generated from LF
+# bytes. Do not let a Windows checkout rewrite them to CRLF: that changes the
+# hash of every text file and makes the integrity file look tampered with.
+* text=auto eol=lf
+
+# Real binaries (no line-ending concept).
+*.bin binary
+engine/switch2/ro/payload/main binary

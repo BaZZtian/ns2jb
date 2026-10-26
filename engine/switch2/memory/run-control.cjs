@@ -1,5 +1,7 @@
 // Track the one acquisition run. Stop at a checkpoint, then finish restoration.
 const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const {EventEmitter} = require('node:events');
 
 class StopRequested extends Error {
@@ -18,7 +20,8 @@ class RunControl {
     };
   }
   async start() {
-    this.state.directory = await fs.mkdtemp('/tmp/ns2-');
+    // /tmp does not exist on a clean Windows install; os.tmpdir() is portable.
+    this.state.directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ns2-'));
     await fs.chmod(this.state.directory, 0o700);
     this.started = true;
     process.on('SIGINT', this.stopSignal);

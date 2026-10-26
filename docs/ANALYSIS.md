@@ -1,17 +1,24 @@
 # The ns2jb exploit chain, mapped against the code
 
-This is a reading of the capture (upstream commit `95f5525`), organized as the
-four stages the pipeline actually runs. Every claim below points at a file in
-this repo; the blog prose (`docs/blog-capture.md`) is the narrative, this is the
-code.
+This is a reading of the engine, organized as the four stages the pipeline
+actually runs. It follows the tree this repository ships by default —
+`kurumuz/ns2jb@eb2bdec`, merged at `4d566aa` — and notes where that fork diverges
+from pepsipu's original capture (`95f5525`, tag `pepsipu-95f5525`); see
+[What the kurumuz fork changes](#what-the-kurumuz-fork-changes) for the
+differences in one place. Every claim below points at a file in this repo; the
+blog prose (`docs/blog-capture.md`) is the narrative, this is the code.
 
 ## Stage 0 — Bootstrap: SmileBASIC userspace to RPC host
 
 **File: `bootstrap.bas`** — the only file a human ever types into the console.
 
 - `RUN` prints `DIST BOOT READY 1015` and ends. `START(...)` is the real entry,
-  invoked from Direct mode with the host IP octets and four u64 words the
-  computer prints.
+  invoked from Direct mode. In this tree it is `COMMON DEF START(PORT,A,B,C,D)`
+  — the port and the four IPv4 octets, nothing else (`bootstrap.bas:182`). The
+  original capture took four extra u64 words, `START(PORT,A,B,C,D,T0#,T1#,T2#,T3#)`,
+  but only ever sent them as zero; the fork hard-codes those zeros into the hello
+  instead. That is the entire bootstrap difference between the two trees: two
+  lines, and the hello payload is byte-identical.
 - The `REMOVE NSR,&H60000000,&H3FFFFFFF` command is issued **once from Direct
   mode after RUN**. That is the bug trigger: the interpreter's bounds check
   `position + count <= array.length` passes because the signed 32-bit sum wraps
@@ -126,12 +133,109 @@ NPDM — hence `SetProcessMemoryPermission`/`MapProcessCodeMemory`/
   `acquisition.abandon()`); the README's "restart the console" rule exists
   because later failures can leave native state only a reboot clears.
 
+## What the kurumuz fork changes
+
+This section exists because the fork is the default here, and because its
+changes are the difference between "it works" and "it dies late" on a console
+with the microSD Express support update. Everything below is a reading of
+`git diff 95f5525 eb2bdec` against the files named.
+
+### The layout assumption that broke
+
+The original `ro/layout.cjs` derived the FS domain vtable from the SDK page at a
+**fixed distance**: `capturedLayout()` used `sdk = range.address + 0x500000` and
+`rootVptr = sdk - 0xf38be0`. On the layout observed after the update that
+distance differs, so acquisition could succeed and the RO launch then fail
+validation — the exact symptom in issue #2.
+
+The fork keeps the nominal offset as *one candidate* and infers the rest:
+
+- `capturedLayout()` scans the captured heap for the `0x58`-spaced pointer pair
+  that identifies the manager/waiters table, takes `rootVptr = first - 0x28e0`,
+  and accepts the derived SDK distance only if it is page-aligned and within
+  `0x10000` of nominal. Candidates are capped at 64.
+- Each candidate must pass **every** structural check in `capturedLayoutAtSdk()`,
+  and **exactly one** may survive (`matches.length === 1`) — otherwise the run
+  aborts rather than guessing.
+- `sdkPageHeader()` separately validates the SDK page's thread-ring header
+  (`ptr(bytes, 0x838) === sdk + 0x668`, a bounded count at `0x848`). This is why
+  the metadata probe now captures a **16 KiB or 4 KiB** page (`metadata-window.cjs`)
+  instead of one fixed size, and why `retained/find-metadata.cjs` tries several
+  hypothesis candidates instead of one.
+
+The chosen candidates are recorded in the layout report under `sdkDiscovery`, so
+a failed run says which offsets it considered.
+
+### Bounded retries instead of one shot
+
+`acquire.cjs` runs the acquisition child up to `MAX_ATTEMPTS = 3` times, each with
+a fresh `memory/probe-reserved-gap.cjs` process, a fresh `acquisition.log`, and a
+10-minute deadline. The original made one attempt. This is the "third fresh boot"
+behaviour from upstream's own testing, moved into the code.
+
+### Longer timeouts
+
+| Where | Original | Fork |
+|---|---|---|
+| `shared/rpc.cjs` native request | 60 s | **180 s** |
+| `switch2/tools/endpoint.cjs` memory request | 60 s fixed | `requestOnce(…, timeoutMs)` default **300 s**; `request()` default 60 s |
+| console greeting | 10 s | 10 s (unchanged) |
+
+A timed-out native request is still destroyed and **must not be replayed** — the
+outcome is unknown. The longer window reduces how often that happens; it does not
+make replay safe.
+
+### Held RPC
+
+`hold.cjs` (`waitForRelease()`) turns the FS endpoint's lifetime into the parent
+runner's: the pipeline publishes `held-ready` over the IPC channel and then blocks
+until the runner sends `release` or the channel disconnects.
+`pipeline.cjs --hold-rpc` writes `retainedEndpoint` into
+`fs-execution-current.json` and defers cleanup until release, instead of retiring
+the endpoint as soon as the demo verifies.
+
+### System-code dump
+
+`firmware-dump.cjs` plus `ro/ncm.cjs`: after 4/4 verification, ask NCM for the
+installed system-program keys, then read each accessible CodeFS `main.npdm` and
+`main`. It writes an inventory with per-file SHA-256 and an `absentFiles` list to
+`dumps/firmware-dump.json`. `prepareDumpDirectory()` refuses an unrecognised
+non-empty directory and only clears one it previously marked — the marker is
+`.ns2jb-firmware-dump.json`.
+
+### Scratch cleanup is unconditional
+
+`cleanup-scratch.cjs` now deletes `NS2_GAP*` entries from the roots of the `save`
+and `tmp` mounts at startup, recursively for directories, without consulting
+previous run reports or inspecting contents. Anything a user names with that
+prefix on either mount is deleted.
+
+### Pairing code removed
+
+`shared/rpc.cjs` no longer reads `token` from `connection.json` and no longer
+sends an `Authorization: Bearer` header. **The bridge is loopback-only and now
+unauthenticated**, so any local process that can reach the port can issue native
+memory requests while a held session is open. That is a real reduction in
+protection, and the reason `run.cjs --rpc` prints a warning and should only be
+used on a trusted machine.
+
+### Smaller fixes
+
+- `run.cjs` free-space check compares `statfs` `bavail * bsize` as BigInt against
+  the required bytes, instead of a form that could reject a run with exactly
+  enough space.
+- `pipeline.cjs` waits 2 s after the native-helper stage before continuing
+  ("wait a little bit before starting the native helper").
+- `pipeline.cjs` accepts only `--dump-firmware` and `--hold-rpc`, rejects
+  duplicates, and requires IPC for held mode.
+
 ## Host requirements
 
-Node 22+ on macOS/Linux per upstream README (the RPC host), SmileBASIC 4.4.9
-with ≥20 MiB free save space, console and computer on the same network, port
-39380 open. `run.cjs` selects the reachable address; `test.cjs` runs the
-host-side unit checks without hardware.
+Node 22+ on macOS, Linux, or Windows (the RPC host — this tree carries two
+Windows portability fixes, see `docs/PROVENANCE.md`), SmileBASIC 4.4.9 with
+≥20 MiB free save space, console and computer on the same network, port 39380
+open. `run.cjs` selects the reachable address; `test.cjs` runs the host-side unit
+checks without hardware.
 
 ## What is deliberately out of scope here
 

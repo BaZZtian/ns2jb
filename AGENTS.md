@@ -54,10 +54,19 @@ token and changes the bootstrap to five-argument `START(PORT,A,B,C,D)`. A saved
    code is ground truth. Where the blog and the code disagree, the code wins, and
    the disagreement is worth a note in `ANALYSIS.md`.
 6. **`SHA256SUMS` must match the tree it ships with.** It is what the README tells
-   users to verify. The fork never regenerated its own copy — 14 of 97 entries
-   were stale against a clean checkout of `eb2bdec` — so this repo's file was
-   regenerated. If you change any shipped file, regenerate it in the same commit.
-   Do not "fix" it by deleting entries.
+   users to verify, and `doctor.cjs` checks it on every preflight. The fork never
+   regenerated its own copy — 14 of 97 entries were stale against a clean checkout
+   of `eb2bdec` — so this repo's file was regenerated, and coverage was widened to
+   every shipped file (top level, `docs/`, `engine/`, `scripts/`), not just the six
+   top-level files plus `engine/`. If you change any shipped file, regenerate in
+   the same commit:
+
+   ```sh
+   node scripts/make-sums.cjs           # rewrite from the tree
+   node scripts/make-sums.cjs --check   # exit 1 if out of date
+   ```
+
+   Do not "fix" it by deleting entries, and do not hand-edit it.
 
 ## What the pieces are
 
@@ -68,6 +77,14 @@ token and changes the bootstrap to five-argument `START(PORT,A,B,C,D)`. A saved
   orchestrates everything after the console connects. `--rpc` holds the session;
   `--dump-firmware` captures system code.
 - `dump-firmware.cjs`, `rpc.cjs` — the two optional entry points.
+- `doctor.cjs` — preflight for users and testers: Node version, file integrity
+  against `SHA256SUMS`, local IPv4 candidates, whether port 39380 is bindable, and
+  `runs/` writability. `--bundle` writes one report file for a bug report. It
+  never contacts the console and changes nothing but a temp folder under `runs/`,
+  so it must stay honest about that: it can say "your side is ready", never "the
+  exploit will work".
+- `scripts/make-sums.cjs` — regenerates `SHA256SUMS` from the tree; `--check`
+  exits 1 when it is stale.
 - `engine/` — the exploit engine: `memory/` (FS arbitrary R/W via the 0x301
   path-overflow + BufferedStorage cache entry), `ro/` (native helper as `ro`,
   domain-table swap, launch, layout discovery), `process/` (FS instruction patch

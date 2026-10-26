@@ -19,6 +19,7 @@ run may need a console restart.
 
 - [Which download to use](#which-download-to-use)
 - [Before you start](#before-you-start)
+- [Check your setup first](#check-your-setup-first)
 - [Step 1 — Put the bootstrap into SmileBASIC](#step-1--put-the-bootstrap-into-smilebasic)
 - [Step 2 — Start the host on your computer](#step-2--start-the-host-on-your-computer)
 - [Step 3 — Drive it from the console](#step-3--drive-it-from-the-console)
@@ -111,6 +112,40 @@ have; it does nothing for exploit reliability.
 
 ---
 
+## Check your setup first
+
+Before you spend a console restart on this, run the preflight on your computer:
+
+```sh
+node doctor.cjs
+```
+
+It checks the five things that go wrong before the exploit is even involved, and
+tells you the exact `V=START(...)` line for your machine:
+
+```
+[ ok ] Node.js version   Node.js 24.18.0 on win32/x64
+[ ok ] Repository files  all 6 required paths are present
+[ ok ] File integrity    117/117 files match SHA256SUMS
+[warn] Network address   several candidates; assuming 192.168.0.4 on Ethernet (also: 172.30.0.1)
+[ ok ] Port 39380        free, so the console will be able to reach this computer
+[ ok ] Run folder        writable
+```
+
+It exits non-zero if anything is wrong, so you can tell at a glance. **It never
+contacts the console** — it cannot tell you whether the exploit will work, only
+that your side is ready.
+
+The three failures it catches, all of which look like "the exploit is broken":
+
+| What it reports | Why it matters |
+|---|---|
+| `File integrity` — a changed or missing file | You are running a modified or half-extracted tree. Re-download rather than debug. |
+| `Port 39380` — already in use | A previous run is still open, or Windows left the socket behind. The console will never connect and the host will sit at *"Waiting for Switch 2"*. |
+| `Network address` — several candidates | You will type the wrong `START` line and the console will connect to nothing. |
+
+---
+
 ## Step 1 — Put the bootstrap into SmileBASIC
 
 This is a one-time job per console.
@@ -142,6 +177,7 @@ exactly what mac2jb does over USB.
 3. In a terminal **in the repository folder**, run:
 
    ```sh
+   node doctor.cjs      # one-time check: Node, files, address, port 39380
    node run.cjs
    ```
 
@@ -230,6 +266,25 @@ SmileBASIC session is not supported and produces confusing errors.
 Keep the `runs/` folder when a run fails — it is the only record of what the
 engine saw. It is git-ignored and never part of the distributable.
 
+### Reporting a failure
+
+If you want to report a problem, this produces one file with everything needed:
+
+```sh
+node doctor.cjs --bundle
+```
+
+It writes `ns2jb-report-<timestamp>.txt` in the current folder: the preflight
+results, your Node.js version and platform, your local network address, the port
+status, and the `result.json` of your most recent run (or a note saying the run
+died before writing one). It contains **no console keys, no memory contents, and
+no game or system files** — review it before posting, since your local IP address
+is in it.
+
+That report is worth more than a description, because the two questions that
+decide almost every report are answered by it: *did the console ever connect?*
+and *which check failed?*
+
 ---
 
 ## Optional: held RPC
@@ -294,11 +349,13 @@ Do not keep personal files with that prefix on either mount.
 ```
 bootstrap.bas        the 229-line program you type into SmileBASIC
 run.cjs              host entrypoint: listens, prints START, orchestrates the run
+doctor.cjs           preflight: Node, file integrity, address, port, run folder
 dump-firmware.cjs    same run, plus a system-code dump
 rpc.cjs              client for the optional held RPC
 test.cjs             host-side checks (node test.cjs) — needs no console
 engine/              the exploit engine, unchanged from the fork except for
                      two Windows portability fixes (see docs/PROVENANCE.md)
+scripts/             maintainer tooling (make-sums.cjs regenerates SHA256SUMS)
 SHA256SUMS           hashes of every shipped file
 docs/                provenance, exploit analysis, upstream READMEs, mac2jb guide,
                      and a list of tools built on this engine
@@ -335,7 +392,14 @@ Details, and what is deliberately out of scope in this repository:
 
 ## Verifying what you downloaded
 
-Every shipped file's SHA-256 is in `SHA256SUMS`. On Linux or macOS:
+Every shipped file's SHA-256 is in `SHA256SUMS` — all 117 of them, including the
+docs you are reading. The quickest check is the one the preflight already does:
+
+```sh
+node doctor.cjs
+```
+
+If you would rather not run any of this code, verify by hand. On Linux or macOS:
 
 ```sh
 shasum -a 256 -c SHA256SUMS
@@ -351,7 +415,15 @@ Get-Content SHA256SUMS | ForEach-Object {
 }
 ```
 
-An empty result means every file matches. The host-side checks need no console:
+An empty result means every file matches. If you changed a shipped file yourself,
+regenerate the list rather than editing it by hand, and check it before committing:
+
+```sh
+node scripts/make-sums.cjs           # rewrite SHA256SUMS from the tree
+node scripts/make-sums.cjs --check   # exit 1 if it is out of date
+```
+
+The host-side checks need no console:
 
 ```sh
 node test.cjs

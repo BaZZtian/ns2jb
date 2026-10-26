@@ -296,8 +296,10 @@ It writes `ns2jb-report-<timestamp>.txt` in the current folder: the preflight
 results, your Node.js version and platform, your local network address, the port
 status, and the `result.json` of your most recent run (or a note saying the run
 died before writing one). It contains **no console keys, no memory contents, and
-no game or system files** — review it before posting, since your local IP address
-is in it.
+no game or system files**, and absolute file paths are replaced with `<home>`,
+`<repo>` and `<temp>` labels before it is written, so your user name and the
+folder you unpacked this into are not in it. Review it before posting anyway:
+your local IP address and the run folder name are.
 
 That report is worth more than a description, because the two questions that
 decide almost every report are answered by it: *did the console ever connect?*

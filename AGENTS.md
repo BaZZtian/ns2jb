@@ -86,7 +86,12 @@ token and changes the bootstrap to five-argument `START(PORT,A,B,C,D)`. A saved
   `runs/` writability. `--bundle` writes one report file for a bug report. It
   never contacts the console and changes nothing but a temp folder under `runs/`,
   so it must stay honest about that: it can say "your side is ready", never "the
-  exploit will work".
+  exploit will work". `--bundle` also redacts absolute paths to `<home>`, `<repo>`,
+  `<temp>` and `<path>` before writing, because `result.json` records the memory
+  socket and the proof/launch/identity/handoff files by absolute path — a report
+  goes into a public issue. Keep the redaction and the paragraph that describes it
+  true together; they were once false, and the file said the local address was the
+  only machine-specific detail in it.
 - `scripts/make-sums.cjs` — regenerates `SHA256SUMS` from the tree; `--check`
   exits 1 when it is stale.
 - `engine/` — the exploit engine: `memory/` (FS arbitrary R/W via the 0x301

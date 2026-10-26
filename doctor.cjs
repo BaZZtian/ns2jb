@@ -191,6 +191,56 @@ function render() {
   return lines;
 }
 
+// This report is meant to be pasted into a public issue, so absolute paths are
+// replaced before the file is written. run.cjs records the memory socket and the
+// proof/launch/identity/handoff files by absolute path, and a failed check can
+// put one in an error message. Longest prefix first: the temp directory sits
+// inside the home directory on Windows, so matching home first would leave
+// "AppData\Local\Temp\..." behind.
+const REDACT_LABELS = () => [
+  [os.tmpdir(), '<temp>'],
+  [os.homedir(), '<home>'],
+  [ROOT, '<repo>'],
+  [process.cwd(), '<cwd>']
+];
+
+function pathLabel(match) {
+  const trimmed = match.replace(/[\s.]+$/, '');
+  const leaf = trimmed.split(/[\\/]/).filter(Boolean).pop() || '';
+  const name = leaf.trim().split(/\s+/)[0] || '';
+  return name ? '<path>/' + name : '<path>';
+}
+
+function redactText(text) {
+  if (typeof text !== 'string' || !text) return text;
+  let out = text;
+  const seen = new Set();
+  for (const [prefix, label] of REDACT_LABELS().sort((a, b) => b[0].length - a[0].length)) {
+    if (!prefix || seen.has(prefix)) continue;
+    seen.add(prefix);
+    for (const form of new Set([prefix, prefix.replace(/\\/g, '/'), prefix.replace(/\\/g, '\\\\')])) {
+      out = out.split(form).join(label);
+    }
+  }
+  // Anything absolute that was not under a known prefix. The drive form cannot
+  // collide with a URL, and the POSIX form refuses a match preceded by a letter,
+  // a slash or a colon, which keeps "https://host/path" intact.
+  return out
+    .replace(/(?<!\w)[A-Za-z]:[\\/][^"'<>|?*,;)\r\n]*/g, pathLabel)
+    .replace(/(?<![\w:/])\/(?:[\w.-]+\/)+[\w.-]+/g, pathLabel);
+}
+
+function redactValue(value) {
+  if (typeof value === 'string') return redactText(value);
+  if (Array.isArray(value)) return value.map(redactValue);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) out[redactText(key)] = redactValue(item);
+    return out;
+  }
+  return value;
+}
+
 function newestRun() {
   const workspace = path.join(ROOT, 'runs');
   if (!fs.existsSync(workspace)) return null;
@@ -224,8 +274,18 @@ function bundleText(host) {
     lines.push('Folder: ' + path.basename(run));
     const resultPath = path.join(run, 'result.json');
     if (fs.existsSync(resultPath)) {
-      try { lines.push(fs.readFileSync(resultPath, 'utf8').trim()); }
-      catch (error) { lines.push('result.json could not be read: ' + error.message); }
+      try {
+        const raw = fs.readFileSync(resultPath, 'utf8');
+        let parsed = null;
+        try { parsed = JSON.parse(raw); } catch { parsed = null; }
+        // Redact the parsed tree and re-serialise it, rather than editing the
+        // raw text: inside JSON a Windows separator is written "\\\\", so a
+        // textual replacement would miss it, and a partial one would produce a
+        // file that no longer parses.
+        lines.push(parsed === null ? redactText(raw.trim()) : JSON.stringify(redactValue(parsed), null, 2));
+      } catch (error) {
+        lines.push('result.json could not be read: ' + redactText(error.message));
+      }
     } else {
       lines.push('No result.json - the run did not reach the point where it writes one.');
       for (const name of ['switch2/pipeline.json', 'switch2/fs-execution-current.json']) {
@@ -238,9 +298,11 @@ function bundleText(host) {
   lines.push('--- what this report contains ---');
   lines.push('Your Node.js version, platform, local IPv4 address, port ' + PORT + ' status,');
   lines.push('checksum results, and the result.json of the most recent run. It contains no');
-  lines.push('console keys, no memory contents, and no game or system files. Review it before');
-  lines.push('posting; the local address is the only machine-specific detail in it.');
-  return lines.join('\n') + '\n';
+  lines.push('console keys, no memory contents, and no game or system files. Absolute file');
+  lines.push('paths are replaced with <home>, <repo>, <temp> and <path> labels before this');
+  lines.push('file is written, so your user name and the folder you unpacked this into are');
+  lines.push('not in it. The local address and the run folder name are: skim before posting.');
+  return redactText(lines.join('\n')) + '\n';
 }
 
 async function main(args = process.argv.slice(2)) {

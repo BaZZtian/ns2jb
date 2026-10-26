@@ -76,6 +76,11 @@ token and changes the bootstrap to five-argument `START(PORT,A,B,C,D)`. A saved
   distributable.
 - `docs/MAC2JB.md` — the macOS route, and the verified proof that mac2jb v0.4.0
   ships this exact fork and this exact bootstrap.
+- `docs/ECOSYSTEM.md` — tools that sit on top of this engine (mac2jb, HBLauncher,
+  ftpd-sb, OunceCake), each with its licence and a pointer at the code the claim
+  comes from. **Do not vendor code with an incompatible licence into this tree,
+  and do not turn an entry into a how-to for copying content the user does not
+  own.** OunceCake is documented and linked, not bundled.
 - `docs/upstream-*-README.md` — the two upstream READMEs, byte-for-byte.
 
 ## Editing docs

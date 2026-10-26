@@ -27,6 +27,7 @@ run may need a console restart.
 - [Optional: held RPC](#optional-held-rpc)
 - [Optional: system-code dump](#optional-system-code-dump)
 - [What is in this repository](#what-is-in-this-repository)
+- [Tools built on this](#tools-built-on-this)
 - [Verifying what you downloaded](#verifying-what-you-downloaded)
 - [Credits](#credits)
 
@@ -257,6 +258,9 @@ trust. Stop it with **Ctrl-C** when finished; only then does it clean up the FS
 endpoint and close the console connection. Keep SmileBASIC open the whole time —
 this does not survive closing the app or restarting the console.
 
+Held mode is also what other tools attach to — see
+[docs/ECOSYSTEM.md](docs/ECOSYSTEM.md).
+
 ---
 
 ## Optional: system-code dump
@@ -296,7 +300,8 @@ test.cjs             host-side checks (node test.cjs) — needs no console
 engine/              the exploit engine, unchanged from the fork except for
                      two Windows portability fixes (see docs/PROVENANCE.md)
 SHA256SUMS           hashes of every shipped file
-docs/                provenance, exploit analysis, upstream READMEs, mac2jb guide
+docs/                provenance, exploit analysis, upstream READMEs, mac2jb guide,
+                     and a list of tools built on this engine
 ```
 
 The engine layout: `engine/switch2/memory/` (arbitrary read/write via the 0x301
@@ -309,6 +314,22 @@ Reading order for the curious: [`docs/PROVENANCE.md`](docs/PROVENANCE.md) (what
 was captured and verified), [`docs/ANALYSIS.md`](docs/ANALYSIS.md) (the exploit
 chain against the actual code), [`docs/blog-capture.md`](docs/blog-capture.md)
 (pepsipu's write-up).
+
+---
+
+## Tools built on this
+
+This repository is the engine and the host. Other projects sit on top of it, each
+with its own repository and licence:
+
+- **mac2jb** — the macOS USB-typing front end. [docs/MAC2JB.md](docs/MAC2JB.md)
+- **HBLauncher** and **ftpd-sb** — a homebrew launcher and FTP access, bundled
+  with mac2jb.
+- **OunceCake** — mounts a game's romFS/exeFS and serves it over FTP from a held
+  RPC session. It is a separate GPL-2.0 project and is **not** vendored here.
+
+Details, and what is deliberately out of scope in this repository:
+[docs/ECOSYSTEM.md](docs/ECOSYSTEM.md).
 
 ---
 

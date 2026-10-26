@@ -53,9 +53,10 @@ Verified here, on this machine:
 | Check | Result |
 |---|---|
 | `vendor/ns2jb/` vs a clean clone of `kurumuz/ns2jb@eb2bdec` | same file set, same contents |
-| `vendor/ns2jb/bootstrap.bas` SHA-256 | `69c9843bde8de00e69b381c69dba20b5a57e1fa026d5677149f0ae6e8a946edb` |
+| `vendor/ns2jb/bootstrap.bas` SHA-256 | `69c9843bde8de00e69b381c69dba20b5a57e1fa026d5677149f0ae6e8a946edb` (CRLF, 8313 bytes) |
 | `assets/bootstrap.bas` SHA-256 | same value |
-| this repository's `bootstrap.bas` SHA-256 | same value |
+| this repository's `bootstrap.bas` SHA-256 | `ad1de5ab9892fc3c9eb0eb9a3a36f6af64e938e715ce08b56860f0848281f837` (LF, 8084 bytes) |
+| the two files, after normalising CRLF to LF | identical — the 229-byte difference is exactly 229 line terminators |
 | release asset `mac2jb-v0.4.0-macos-arm64.zip` | 78,978,431 bytes, SHA-256 `1a111ba47ec9781390f15ca79aa5b73837ae8eb90f7ea7498a03565db31110e9` (from GitHub's release API) |
 
 So "the Mac app" and this repository ship the same exploit and the same

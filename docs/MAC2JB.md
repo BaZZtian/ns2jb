@@ -12,10 +12,11 @@ engine as this repository.
 > **Verified relationship, not a guess.** mac2jb v0.4.0 pins
 > `kurumuz/ns2jb@eb2bdec8f3907c5830eb01fb9d55797af7403579` in its
 > `upstream.lock`, and the copy it vendors under `vendor/ns2jb/` is byte-identical
-> to a clean clone of that commit. Its bundled `assets/bootstrap.bas` hashes to
-> `69c9843bde8de00e69b381c69dba20b5a57e1fa026d5677149f0ae6e8a946edb` — the same
-> file this repository ships. That is why this repository's default branch is the
-> kurumuz fork: so "the Mac app" and "the repo" are the same exploit.
+> to a clean clone of that commit. Its bundled `assets/bootstrap.bas` is the same
+> 229-line program this repository ships — character for character, differing only
+> in line endings (mac2jb CRLF, this repo LF; see the check at the end of this
+> page). That is why this repository's default branch is the kurumuz fork: so
+> "the Mac app" and "the repo" are the same exploit.
 
 ---
 
@@ -189,8 +190,13 @@ Checked here, on this machine, without a console:
 
 - v0.4.0 vendors `kurumuz/ns2jb@eb2bdec`, matching its `upstream.lock`.
 - Its `vendor/ns2jb/` tree matches a clean clone of that commit file-for-file.
-- `assets/bootstrap.bas` and this repository's `bootstrap.bas` are byte-identical
-  (SHA-256 `69c9843b…8a946edb`).
+- `assets/bootstrap.bas` and this repository's `bootstrap.bas` have identical
+  content — the same 229 lines, character for character. They are not
+  byte-identical: mac2jb ships CRLF (`69c9843b…8a946edb`, 8313 bytes) and this
+  repository ships LF (`ad1de5ab…8281f837`, 8084 bytes), the 229-byte difference
+  being exactly one `\r` per line. Normalise the endings and the hashes agree.
+  Nothing here reads the file as bytes — `run.cjs` only lists it for checksumming
+  — so the endings change no behaviour in this tree.
 - The release asset digest above came from GitHub's release API.
 
 **Not** verified here: anything requiring a Switch 2 or an Apple silicon Mac —

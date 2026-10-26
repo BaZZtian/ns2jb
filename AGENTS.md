@@ -75,7 +75,11 @@ token and changes the bootstrap to five-argument `START(PORT,A,B,C,D)`. A saved
   known fingerprints, and connects back to the host over TCP port 39380.
 - `run.cjs` — host entrypoint; listens, prints the `V=START(...)` line, and
   orchestrates everything after the console connects. `--rpc` holds the session;
-  `--dump-firmware` captures system code.
+  `--dump-firmware` captures system code. `--bind ADDRESS` sets the listening
+  address independently of the advertised one, for WSL 2 NAT / Docker / VM
+  forwarders (upstream issue #3) — the listener lives here, so this needs no
+  `engine/` change. `explainFailure()` adds a plain-language hint to the timing
+  races upstream reports; it must never rewrite a message it does not recognise.
 - `dump-firmware.cjs`, `rpc.cjs` — the two optional entry points.
 - `doctor.cjs` — preflight for users and testers: Node version, file integrity
   against `SHA256SUMS`, local IPv4 candidates, whether port 39380 is bindable, and
@@ -99,6 +103,10 @@ token and changes the bootstrap to five-argument `START(PORT,A,B,C,D)`. A saved
   and do not turn an entry into a how-to for copying content the user does not
   own.** OunceCake is documented and linked, not bundled.
 - `docs/upstream-*-README.md` — the two upstream READMEs, byte-for-byte.
+- `docs/UPSTREAM-ISSUES.md` — the two upstream issue trackers: which reports are
+  timing races, which is a real host-side defect (fixed), and which are
+  hardware-dependent and deliberately not "fixed" here. Update it when either
+  upstream moves or a report is resolved; do not let it drift into a stale summary.
 
 ## Editing docs
 

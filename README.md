@@ -126,7 +126,7 @@ tells you the exact `V=START(...)` line for your machine:
 ```
 [ ok ] Node.js version   Node.js 24.18.0 on win32/x64
 [ ok ] Repository files  all 6 required paths are present
-[ ok ] File integrity    117/117 files match SHA256SUMS
+[ ok ] File integrity    118/118 files match SHA256SUMS
 [warn] Network address   several candidates; assuming 192.168.0.4 on Ethernet (also: 172.30.0.1)
 [ ok ] Port 39380        free, so the console will be able to reach this computer
 [ ok ] Run folder        writable
@@ -190,6 +190,18 @@ exactly what mac2jb does over USB.
 
    The host listens on **TCP port 39380**. If that port is blocked, the console
    will never connect, and the host will sit at *"Waiting for Switch 2"*.
+
+   **Forwarded hosts (WSL 2, Docker, a VM).** Normally the address the console dials
+   and the address the host binds are the same. When a forwarder sits between them
+   they are not, so `--bind` sets the listening address independently:
+
+   ```sh
+   node run.cjs --bind 172.20.0.5 192.168.1.10
+   ```
+
+   The console still connects to `192.168.1.10` — that is what `V=START` carries —
+   while the socket is bound to `172.20.0.5`. `--bind 0.0.0.0` listens on every
+   interface.
 
 Leave that terminal open. It prints the exact `V=START(...)` line for your
 computer's address — you will need it in a moment.
@@ -262,6 +274,12 @@ process and clears everything. There is nothing to uninstall.
 
 **Always restart the console between attempts.** Re-running in the same
 SmileBASIC session is not supported and produces confusing errors.
+
+The host adds a plain-language explanation to the failures it recognises — the
+canary timing race in particular, which is the most common way a run dies and is
+not a sign that anything is broken. A message it does not recognise is printed
+unchanged rather than guessed at. What each one means is in
+[`docs/UPSTREAM-ISSUES.md`](docs/UPSTREAM-ISSUES.md).
 
 Keep the `runs/` folder when a run fails — it is the only record of what the
 engine saw. It is git-ignored and never part of the distributable.
@@ -358,7 +376,7 @@ engine/              the exploit engine, unchanged from the fork except for
 scripts/             maintainer tooling (make-sums.cjs regenerates SHA256SUMS)
 SHA256SUMS           hashes of every shipped file
 docs/                provenance, exploit analysis, upstream READMEs, mac2jb guide,
-                     and a list of tools built on this engine
+                     upstream issue triage, and a list of tools built on this engine
 ```
 
 The engine layout: `engine/switch2/memory/` (arbitrary read/write via the 0x301
@@ -369,8 +387,9 @@ framing).
 
 Reading order for the curious: [`docs/PROVENANCE.md`](docs/PROVENANCE.md) (what
 was captured and verified), [`docs/ANALYSIS.md`](docs/ANALYSIS.md) (the exploit
-chain against the actual code), [`docs/blog-capture.md`](docs/blog-capture.md)
-(pepsipu's write-up).
+chain against the actual code), [`docs/UPSTREAM-ISSUES.md`](docs/UPSTREAM-ISSUES.md)
+(what the two upstream issue trackers report, and what was done about each), and
+[`docs/blog-capture.md`](docs/blog-capture.md) (pepsipu's write-up).
 
 ---
 

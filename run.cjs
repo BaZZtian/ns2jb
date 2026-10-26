@@ -164,15 +164,47 @@ function waitForRpcStop(connection, signals = process, engineFinished = null) {
   });
 }
 
+const USAGE = 'Usage: node run.cjs [--rpc] [--dump-firmware] [--bind ADDRESS] [computer-IP]\n' +
+  '\n' +
+  '  computer-IP     the address the console connects to; it is what V=START(...) carries\n' +
+  '  --bind ADDRESS  listen on ADDRESS instead (default: computer-IP). Needed when a\n' +
+  '                  forwarder sits in between, such as WSL 2 NAT or Docker: the\n' +
+  '                  console still reaches computer-IP, but the socket is bound to\n' +
+  '                  ADDRESS. 0.0.0.0 binds every interface.\n' +
+  '  --rpc           hold the session open for rpc.cjs instead of exiting\n' +
+  '  --dump-firmware also dump system code\n' +
+  '\n' +
+  'Switch 2 only. No npm install required. See README.md for the BASIC setup.';
+
+function parseArgs(args) {
+  const options = {rpc: args.includes('--rpc') || process.env.NS2_RPC_MODE === '1',
+    dumpFirmware: args.includes('--dump-firmware'), bind: null, hostArgs: []};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--rpc' || arg === '--dump-firmware' || arg === '--help') continue;
+    if (arg === '--bind' || arg.startsWith('--bind=')) {
+      const value = arg === '--bind' ? args[++i] : arg.slice('--bind='.length);
+      if (!value || !net.isIPv4(value)) throw Error('--bind needs an IPv4 address\n' + USAGE);
+      options.bind = value;
+      continue;
+    }
+    options.hostArgs.push(arg);
+  }
+  return options;
+}
+
 async function main(args = process.argv.slice(2)) {
-  if (args.length === 1 && args[0] === '--help') {
-    console.log('Usage: node run.cjs [--rpc] [--dump-firmware] [computer-IP]\n' +
-      'Switch 2 only. No npm install required. See README.md for the BASIC setup.');
+  if (args.includes('--help')) {
+    console.log(USAGE);
     return;
   }
-  const rpcMode = args.includes('--rpc') || process.env.NS2_RPC_MODE === '1';
-  const dumpFirmware = args.includes('--dump-firmware');
-  const host = await chooseHost(args.filter(arg => arg !== '--rpc' && arg !== '--dump-firmware'));
+  const options = parseArgs(args);
+  const rpcMode = options.rpc;
+  const dumpFirmware = options.dumpFirmware;
+  const host = await chooseHost(options.hostArgs);
+  // The advertised address and the listening address are the same thing unless a
+  // forwarder is in between, which is why --bind exists (upstream issue #3).
+  const bind = options.bind || host;
   const basicArgs = Number(process.env.NS2_BASIC_ARITY || 5);
   const command = connectCommand(host, basicArgs);
   const workspace = path.join(__dirname, 'runs');
@@ -190,10 +222,13 @@ async function main(args = process.argv.slice(2)) {
   const directory = await fs.mkdtemp(path.join(workspace, 'switch2-'));
   await fs.writeFile(path.join(directory, 'connect.txt'), command + '\n', {mode: 0o600});
   const result = {platform: 2, sourceSha256: await sourceDigest(), started: new Date().toISOString(), verified: false};
+  if (bind !== host) result.bind = bind;
   let native, bridge, engine, failure;
   try {
-    const connected = await listen({host, port, onWaiting() {
-      console.log(`Waiting for Switch 2 at ${host}:${port}.`);
+    const connected = await listen({host: bind, port, onWaiting() {
+      console.log(bind === host
+        ? `Waiting for Switch 2 at ${host}:${port}.`
+        : `Waiting for Switch 2 on ${bind}:${port}; the console connects to ${host}:${port}.`);
       console.log('In a freshly opened SmileBASIC, load the saved bootstrap and enter:');
       console.log('  RUN\n  REMOVE NSR,&H60000000,&H3FFFFFFF');
       console.log('After the expected Out of memory message, enter:');
@@ -263,7 +298,7 @@ async function main(args = process.argv.slice(2)) {
     result.completed = new Date().toISOString();
     await save(path.join(directory, 'result.json'), result);
   }
-  if (failure) throw Error(failure.message + '\nDetails: ' + directory);
+  if (failure) throw Error(explainFailure(failure.message) + '\nDetails: ' + directory);
   console.log('FS execution verified. Original instructions restored and scratch cleaned up.');
   if (dumpFirmware) console.log('System-program CodeFS dump: ' +
     path.join(dumpDirectory, 'firmware-dump.json'));
@@ -271,6 +306,34 @@ async function main(args = process.argv.slice(2)) {
   return result;
 }
 
-module.exports = {main, addresses, chooseHost, connectCommand, sourceDigest, prepareDumpDirectory,
-  startEngine, checkEngine, waitForRpcStop};
+// Upstream's tracker names these failures, and they are timing races rather than
+// broken installs. The hint says what state the console is left in, which differs:
+// a bounded failure has already cleaned up, while a placement uncertainty
+// deliberately retains its resources. See docs/UPSTREAM-ISSUES.md.
+const KNOWN_FAILURES = [
+  {match: 'Pinning storage was not created while the canary was pending',
+    hint: 'The first wave lost the canary timing race, so the pin had nothing pending to\n' +
+      'overlap. This is the race described in upstream issue #1. The engine cleaned up\n' +
+      'after itself; restart the console and run again.'},
+  {match: 'Overwrite missed the qualified canary',
+    hint: 'The memory window qualified, but the overwrite did not land on the canary\n' +
+      '(upstream issue #5). The engine kept its resources on purpose. Restart the\n' +
+      'console and do not replay commands from the old session.'},
+  {match: 'Repeated overwrite missed the canary',
+    hint: 'The second overwrite missed the canary the first one had hit (upstream #1/#5).\n' +
+      'The engine kept its resources on purpose. Restart the console and do not replay\n' +
+      'commands from the old session.'},
+  {match: 'FS acquisition did not complete',
+    hint: 'Stage 2/4 never qualified, which is the timing race in upstream issue #1.\n' +
+      'Restart the console and try again. If it never qualifies, check item 3 in\n' +
+      'System Settings and your SmileBASIC version (see README.md).'}
+];
+
+function explainFailure(message) {
+  const known = KNOWN_FAILURES.find(entry => message.includes(entry.match));
+  return known ? message + '\n\n' + known.hint : message;
+}
+
+module.exports = {main, addresses, chooseHost, connectCommand, parseArgs, explainFailure,
+  sourceDigest, prepareDumpDirectory, startEngine, checkEngine, waitForRpcStop};
 if (require.main === module) main().catch(error => {console.error(error.message); process.exitCode = 1;});

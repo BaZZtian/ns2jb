@@ -12,7 +12,7 @@ const {Connection, parseHello, MAGIC} = require('./engine/lib/connection.cjs');
 const {callRecord} = require('./engine/lib/native.cjs');
 const {build} = require('./engine/shared/frames.cjs');
 const {plan} = require('./engine/switch2/memory/signed-cache-plan.cjs');
-const {chooseHost, addresses, connectCommand, prepareDumpDirectory,
+const {chooseHost, addresses, connectCommand, prepareDumpDirectory, parseArgs, explainFailure,
   startEngine, checkEngine, waitForRpcStop} = require('./run.cjs');
 const {waitForRelease} = require('./engine/switch2/hold.cjs');
 const {serve} = require('./engine/lib/bridge.cjs');
@@ -280,6 +280,49 @@ test('firmware dumps use a dedicated directory and clear only marked prior dumps
   // exercises the same reparse-point path without that privilege.
   fs.symlinkSync(base, root, process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(prepareDumpDirectory(root), /symlink/);
+});
+
+test('--bind separates the listening address from the advertised one', () => {
+  // A forwarder (WSL 2 NAT, Docker) needs the socket bound to an address the
+  // console never dials; the advertised address is what V=START carries.
+  const forwarded = parseArgs(['--bind', '172.20.0.5', '192.168.0.4']);
+  assert.equal(forwarded.bind, '172.20.0.5');
+  assert.deepEqual(forwarded.hostArgs, ['192.168.0.4']);
+  assert.equal(connectCommand(forwarded.hostArgs[0]), 'V=START(39380,192,168,0,4)');
+
+  const equal = parseArgs(['--bind=0.0.0.0', '--rpc']);
+  assert.equal(equal.bind, '0.0.0.0');
+  assert.equal(equal.rpc, true);
+  assert.deepEqual(equal.hostArgs, []);
+
+  // Default behaviour must not change: no --bind means bind where you advertise.
+  assert.equal(parseArgs(['192.168.0.4']).bind, null);
+  assert.equal(parseArgs([]).bind, null);
+
+  // A mistyped value must fail loudly rather than become the advertised address.
+  assert.throws(() => parseArgs(['--bind']), /IPv4/);
+  assert.throws(() => parseArgs(['--bind', 'not-an-ip']), /IPv4/);
+  assert.throws(() => parseArgs(['--bind=host.docker.internal']), /IPv4/);
+  assert.deepEqual(parseArgs(['--bind', '172.20.0.5']).hostArgs, []);
+});
+
+test('known upstream timing failures get an actionable hint, unknown ones pass through', () => {
+  const pin = explainFailure('Pinning storage was not created while the canary was pending');
+  assert.match(pin, /issue #1/);
+  assert.match(pin, /cleaned up/);
+  assert.match(pin, /restart the console/i);
+
+  // Placement uncertainty is the one case that must NOT claim it cleaned up.
+  const missed = explainFailure('Overwrite missed the qualified canary; retain resources for recovery');
+  assert.match(missed, /issue #5/);
+  assert.match(missed, /kept its resources/);
+  assert.doesNotMatch(missed, /cleaned up/);
+
+  assert.match(explainFailure('FS acquisition did not complete'), /Stage 2\/4/);
+
+  // Anything unclassified must come back byte-identical rather than guessed at.
+  const unknown = 'Something the engine has never said before';
+  assert.equal(explainFailure(unknown), unknown);
 });
 
 test('the engine has only local or Node dependencies, all present in the package', () => {
